@@ -2,7 +2,16 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.0.10**.
+Current version: **1.1.0**.
+
+### 1.1.0 configurable automatic player avoidance
+
+- Press `F7` to open the built-in settings panel, or click the active bot icon in the top-right corner.
+- `Auto avoidance` enables or disables moving away from nearby chefs.
+- `Avoidance distance` is adjustable from `0.5` to `4.0` grid tiles and defaults to `1.5`.
+- Avoidance uses reachable grid cells rather than moving blindly away, pauses the current dishwashing task, and resumes it when the area is clear.
+- A `0.35`-tile release margin prevents repeated toggling when another chef stands at the configured boundary.
+- Settings are stored through the standard BepInEx configuration system in `BepInEx/config/local.overcooked2.dishwasherbot.cfg`. They also appear automatically if BepInEx Configuration Manager is installed later.
 
 ### 1.0.10 remote-client input synchronisation
 

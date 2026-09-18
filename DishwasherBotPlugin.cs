@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using BepInEx;
+using BepInEx.Configuration;
 using BepInEx.Logging;
 using Team17.Online.Multiplayer.Messaging;
 using UnityEngine;
@@ -13,7 +14,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overcooked 2 Dishwasher Bot";
-        public const string PluginVersion = "1.0.10";
+        public const string PluginVersion = "1.1.0";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -23,9 +24,14 @@ namespace Overcooked2DishwasherBot
 
         private readonly GridPathNavigator _navigator = new GridPathNavigator();
         private readonly HashSet<string> _reportedErrors = new HashSet<string>();
+        private readonly List<Vector3> _avoidanceThreats = new List<Vector3>();
 
         private ManualLogSource _log;
+        private ConfigEntry<bool> _autoAvoidance;
+        private ConfigEntry<float> _avoidanceDistance;
         private bool _enabled;
+        private bool _showSettings;
+        private bool _avoidingPlayers;
         private PlayerControls _player;
         private ClientPlayerAttachmentCarrier _carrier;
         private BotInputBinding _input;
@@ -56,14 +62,27 @@ namespace Overcooked2DishwasherBot
             MovingToSink,
             PlacingInSink,
             Washing,
+            AvoidingPlayers,
             Waiting
         }
 
         private void Awake()
         {
             _log = Logger;
+            _autoAvoidance = Config.Bind(
+                "Avoidance",
+                "Enabled",
+                true,
+                "Move the dishwasher bot away when another chef comes too close.");
+            _avoidanceDistance = Config.Bind(
+                "Avoidance",
+                "Distance",
+                1.5f,
+                new ConfigDescription(
+                    "Distance in grid tiles at which the bot starts avoiding another chef.",
+                    new AcceptableValueRange<float>(0.5f, 4f)));
             CreateStatusBadgeTextures();
-            _log.LogInfo(PluginName + " " + PluginVersion + " loaded. Press F8 to toggle.");
+            _log.LogInfo(PluginName + " " + PluginVersion + " loaded. Press F8 to toggle; F7 opens settings.");
             if (ClientSinkPlateCount == null)
             {
                 _log.LogWarning("ClientWashingStation.m_plateCount was not found; sink completion will use interaction state only.");
@@ -77,6 +96,10 @@ namespace Overcooked2DishwasherBot
                 if (Input.GetKeyDown(KeyCode.F8))
                 {
                     SetBotEnabled(!_enabled);
+                }
+                if (Input.GetKeyDown(KeyCode.F7))
+                {
+                    _showSettings = !_showSettings;
                 }
 
                 if (!_enabled)
@@ -116,20 +139,79 @@ namespace Overcooked2DishwasherBot
 
         private void OnGUI()
         {
-            if (!_enabled || _statusBackground == null || _statusIcon == null)
-            {
-                return;
-            }
-
             int previousDepth = GUI.depth;
             Color previousColor = GUI.color;
-            float badgeLeft = Screen.width - 44f;
-            GUI.depth = -1000;
-            GUI.color = Color.white;
-            GUI.DrawTexture(new Rect(badgeLeft, 12f, 32f, 32f), _statusBackground, ScaleMode.StretchToFill, true);
-            GUI.DrawTexture(new Rect(badgeLeft + 6f, 18f, 20f, 20f), _statusIcon, ScaleMode.ScaleToFit, true);
+
+            if (_enabled && _statusBackground != null && _statusIcon != null)
+            {
+                float badgeLeft = Screen.width - 44f;
+                Rect badgeRect = new Rect(badgeLeft, 12f, 32f, 32f);
+                GUI.depth = -1000;
+                GUI.color = Color.white;
+                GUI.DrawTexture(badgeRect, _statusBackground, ScaleMode.StretchToFill, true);
+                GUI.DrawTexture(new Rect(badgeLeft + 6f, 18f, 20f, 20f), _statusIcon, ScaleMode.ScaleToFit, true);
+
+                Event currentEvent = Event.current;
+                if (currentEvent != null
+                    && currentEvent.type == EventType.MouseDown
+                    && currentEvent.button == 0
+                    && badgeRect.Contains(currentEvent.mousePosition))
+                {
+                    _showSettings = !_showSettings;
+                    currentEvent.Use();
+                }
+            }
+
+            if (_showSettings)
+            {
+                DrawSettingsPanel();
+            }
+
             GUI.color = previousColor;
             GUI.depth = previousDepth;
+        }
+
+        private void DrawSettingsPanel()
+        {
+            const float width = 286f;
+            const float height = 142f;
+            float left = Mathf.Max(8f, Screen.width - width - 12f);
+            Rect panel = new Rect(left, 52f, width, height);
+
+            GUI.depth = -1001;
+            GUI.color = Color.white;
+            GUI.Box(panel, "Dishwasher Bot Settings");
+
+            bool enabled = GUI.Toggle(
+                new Rect(panel.x + 16f, panel.y + 32f, panel.width - 32f, 22f),
+                _autoAvoidance.Value,
+                "Auto avoidance");
+            if (enabled != _autoAvoidance.Value)
+            {
+                _autoAvoidance.Value = enabled;
+                if (!enabled)
+                {
+                    StopAvoidingPlayers();
+                }
+            }
+
+            GUI.Label(
+                new Rect(panel.x + 16f, panel.y + 59f, panel.width - 32f, 22f),
+                "Avoidance distance: " + _avoidanceDistance.Value.ToString("0.0") + " tiles");
+            float distance = GUI.HorizontalSlider(
+                new Rect(panel.x + 18f, panel.y + 85f, panel.width - 36f, 18f),
+                _avoidanceDistance.Value,
+                0.5f,
+                4f);
+            distance = Mathf.Round(distance * 10f) * 0.1f;
+            if (Mathf.Abs(distance - _avoidanceDistance.Value) >= 0.05f)
+            {
+                _avoidanceDistance.Value = distance;
+            }
+
+            GUI.Label(
+                new Rect(panel.x + 16f, panel.y + 110f, panel.width - 32f, 22f),
+                "F7: close settings");
         }
 
         private void CreateStatusBadgeTextures()
@@ -231,6 +313,8 @@ namespace Overcooked2DishwasherBot
             _dirtyInteractionCellSince = 0f;
             _droppingItemId = 0;
             _lastDirtyInteractionTarget = null;
+            _avoidingPlayers = false;
+            _avoidanceThreats.Clear();
 
             if (enabled)
             {
@@ -367,6 +451,11 @@ namespace Overcooked2DishwasherBot
             }
             _droppingItemId = 0;
 
+            if (TryAvoidPlayers())
+            {
+                return;
+            }
+
             if (carried != null)
             {
                 _dirtyTarget = null;
@@ -435,6 +524,93 @@ namespace Overcooked2DishwasherBot
             }
 
             MoveToDirtyPlates(_dirtyTarget);
+        }
+
+        private bool TryAvoidPlayers()
+        {
+            if (_autoAvoidance == null || !_autoAvoidance.Value || _player == null)
+            {
+                StopAvoidingPlayers();
+                return false;
+            }
+
+            _avoidanceThreats.Clear();
+            float triggerDistance = Mathf.Clamp(_avoidanceDistance.Value, 0.5f, 4f);
+            float releaseDistance = triggerDistance + 0.35f;
+            float nearestSqrDistance = float.PositiveInfinity;
+            Vector3 botPosition = _player.transform.position;
+            GridManager botGrid = GameUtils.GetGridManager(_player.transform);
+
+            PlayerControls[] players = FindObjectsOfType<PlayerControls>();
+            for (int i = 0; i < players.Length; i++)
+            {
+                PlayerControls other = players[i];
+                if (other == null
+                    || other == _player
+                    || !other.enabled
+                    || !other.gameObject.activeInHierarchy)
+                {
+                    continue;
+                }
+
+                Vector3 otherPosition = other.transform.position;
+                if (Mathf.Abs(otherPosition.y - botPosition.y) > 1.1f)
+                {
+                    continue;
+                }
+                GridManager otherGrid = GameUtils.GetGridManager(other.transform);
+                if (botGrid != null && otherGrid != null && botGrid != otherGrid)
+                {
+                    continue;
+                }
+                float sqrDistance = HorizontalSqrDistance(botPosition, otherPosition);
+                if (sqrDistance < nearestSqrDistance)
+                {
+                    nearestSqrDistance = sqrDistance;
+                }
+                _avoidanceThreats.Add(otherPosition);
+            }
+
+            if (_avoidanceThreats.Count == 0)
+            {
+                StopAvoidingPlayers();
+                return false;
+            }
+
+            float activeDistance = _avoidingPlayers ? releaseDistance : triggerDistance;
+            if (nearestSqrDistance > activeDistance * activeDistance)
+            {
+                StopAvoidingPlayers();
+                return false;
+            }
+
+            if (!_avoidingPlayers)
+            {
+                _avoidingPlayers = true;
+                _navigator.Clear();
+            }
+
+            SetState(BotState.AvoidingPlayers);
+            bool hasEscapePath;
+            Vector3 direction = _navigator.DirectionAwayFrom(
+                _player,
+                _avoidanceThreats,
+                releaseDistance,
+                out hasEscapePath);
+            SetMove(direction);
+            return true;
+        }
+
+        private void StopAvoidingPlayers()
+        {
+            if (!_avoidingPlayers)
+            {
+                return;
+            }
+
+            _avoidingPlayers = false;
+            _avoidanceThreats.Clear();
+            _navigator.Clear();
         }
 
         private void DropUnexpectedItem(GameObject carried)
@@ -844,6 +1020,8 @@ namespace Overcooked2DishwasherBot
 
         private void ShutdownBinding()
         {
+            _avoidingPlayers = false;
+            _avoidanceThreats.Clear();
             ReleaseRobotInputs(true);
             _navigator.Clear();
             _dirtyTarget = null;
