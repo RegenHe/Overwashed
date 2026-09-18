@@ -14,7 +14,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overcooked 2 Dishwasher Bot";
-        public const string PluginVersion = "1.1.0";
+        public const string PluginVersion = "1.1.1";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -72,7 +72,7 @@ namespace Overcooked2DishwasherBot
             _autoAvoidance = Config.Bind(
                 "Avoidance",
                 "Enabled",
-                true,
+                false,
                 "Move the dishwasher bot away when another chef comes too close.");
             _avoidanceDistance = Config.Bind(
                 "Avoidance",
@@ -82,7 +82,7 @@ namespace Overcooked2DishwasherBot
                     "Distance in grid tiles at which the bot starts avoiding another chef.",
                     new AcceptableValueRange<float>(0.5f, 4f)));
             CreateStatusBadgeTextures();
-            _log.LogInfo(PluginName + " " + PluginVersion + " loaded. Press F8 to toggle; F7 opens settings.");
+            _log.LogInfo(PluginName + " " + PluginVersion + " loaded. Press F8 to toggle; click the active bot icon for settings.");
             if (ClientSinkPlateCount == null)
             {
                 _log.LogWarning("ClientWashingStation.m_plateCount was not found; sink completion will use interaction state only.");
@@ -97,11 +97,6 @@ namespace Overcooked2DishwasherBot
                 {
                     SetBotEnabled(!_enabled);
                 }
-                if (Input.GetKeyDown(KeyCode.F7))
-                {
-                    _showSettings = !_showSettings;
-                }
-
                 if (!_enabled)
                 {
                     return;
@@ -211,7 +206,7 @@ namespace Overcooked2DishwasherBot
 
             GUI.Label(
                 new Rect(panel.x + 16f, panel.y + 110f, panel.width - 32f, 22f),
-                "F7: close settings");
+                "Click the bot icon to close settings");
         }
 
         private void CreateStatusBadgeTextures()
@@ -323,6 +318,7 @@ namespace Overcooked2DishwasherBot
             }
             else
             {
+                _showSettings = false;
                 ReleaseRobotInputs(false);
                 EndCurrentInteraction();
                 ShutdownBinding();
