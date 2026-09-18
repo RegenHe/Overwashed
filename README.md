@@ -2,7 +2,15 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.3.0**.
+Current version: **1.3.1**.
+
+### 1.3.1 route-following stability fix
+
+- Restores the proven `1.2.2` connected-kitchen BFS navigator after the native `GridNavSpace` rewrite caused regressions on previously working layouts.
+- Keeps the selected interaction side stable across periodic replans instead of alternating between equal-length goals around a station.
+- Requires the chef to brake at grid corners and at the final interaction cell before changing direction, preventing movement inertia from cutting into counters.
+- Removes free-form left/right steering from normal route following. A blocked route now stops and replans through the grid instead of orbiting a table edge.
+- Final target alignment alternates normal input turning pulses with braking frames, so facing is corrected through the host/client input path without continuously pushing into a counter.
 
 ### 1.3.0 native navigation rewrite
 

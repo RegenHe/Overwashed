@@ -31,3 +31,5 @@ These names and signatures were taken from the locally installed `Overcooked2_Da
 - `GameUtils.GetGridManager(Transform)` may return a local manager from the object's parent hierarchy while the chef walks on the global floor manager. Different manager instances are not sufficient evidence that two world positions are disconnected.
 - `GridNavSpace.GetNavPoint(Vector3)` maps world positions onto the game's global navigation map, and `GridNavSpace.FindPath(Point2, Point2)` returns the corresponding static kitchen route used by `GridNavigator`.
 - `ClientPlayerControlsImpl_Default.Update_Rotation()` rotates the chef from the normal movement axes before applying movement. A short bounded input burst can therefore synchronise final interaction facing without directly mutating the transform.
+- `PlayerControlsHelper.GetControlAxis(...)` normalises every non-zero movement vector, so reducing analogue magnitude does not slow the chef; route corners must use zero-input braking frames instead.
+- `PlayerControls.Motion.GetVelocityXZ()` exposes the current horizontal speed used to wait for that braking to finish before a 90-degree turn or final-facing pulse.

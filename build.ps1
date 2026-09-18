@@ -1,6 +1,7 @@
 param(
     [ValidateSet('Debug', 'Release')]
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [string]$OutputDirectory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,7 +10,11 @@ $gameRoot = Split-Path -Parent $projectDir
 $managedDir = Join-Path $gameRoot 'Overcooked2_Data\Managed'
 $bepInExCore = Join-Path $gameRoot 'BepInEx\core'
 $localDotnetHome = Join-Path $gameRoot 'tmp\dotnet-home'
-$outputDir = Join-Path $projectDir ("bin\" + $Configuration)
+$outputDir = if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    Join-Path $projectDir ("bin\" + $Configuration)
+} else {
+    $OutputDirectory
+}
 $output = Join-Path $outputDir 'Overcooked2.DishwasherBot.dll'
 $deployed = Join-Path $gameRoot 'BepInEx\plugins\Overcooked2.DishwasherBot.dll'
 
