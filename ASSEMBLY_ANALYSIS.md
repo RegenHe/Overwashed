@@ -27,4 +27,5 @@ These names and signatures were taken from the locally installed `Overcooked2_Da
 - `ClientPlateStation` is the client serving handler and its `PlateStation.m_teamId` identifies the station belonging to the keyboard chef's team.
 - `ClientPlacementContainer.CanHandlePlacement(...)` performs symmetric combination, allowing an empty carried plate to collect a matching completed meal through the normal placement input.
 - `GroundCast.GetGroundPoint()` exposes the chef's current physical walking-surface height; navigation uses this instead of the transform pivot when rejecting counter tops as floor.
-- Grid occupancy is not sufficient on every map: fixed scenery can physically block the segment between two nominal grid cells, so BFS edges are also validated with a horizontal physics sweep.
+- Grid occupancy is not sufficient on every map: when the chef physically encounters unregistered fixed scenery, the obstructed edge is excluded from the current BFS route and replanned.
+- `GameUtils.GetGridManager(Transform)` may return a local manager from the object's parent hierarchy while the chef walks on the global floor manager. Different manager instances are not sufficient evidence that two world positions are disconnected.

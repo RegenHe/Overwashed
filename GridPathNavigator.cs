@@ -18,7 +18,7 @@ namespace Overcooked2DishwasherBot
 
         private readonly List<Vector3> _worldPath = new List<Vector3>();
         private readonly HashSet<GridIndex> _rejectedInteractionCells = new HashSet<GridIndex>(default(GridIndex));
-        private readonly RaycastHit[] _edgeHits = new RaycastHit[32];
+        private readonly HashSet<GridEdge> _blockedPathEdges = new HashSet<GridEdge>();
         private GameObject _target;
         private GridManager _grid;
         private GridIndex _currentGoal;
@@ -48,6 +48,7 @@ namespace Overcooked2DishwasherBot
             _hasCurrentGoal = false;
             _searchAllNeighbourCells = false;
             _rejectedInteractionCells.Clear();
+            _blockedPathEdges.Clear();
             _avoidDirection = Vector3.zero;
             _avoidUntil = 0f;
             Status = "cleared";
@@ -101,6 +102,7 @@ namespace Overcooked2DishwasherBot
             if (targetChanged)
             {
                 _rejectedInteractionCells.Clear();
+                _blockedPathEdges.Clear();
                 _hasCurrentGoal = false;
                 _searchAllNeighbourCells = searchAllNeighbourCells;
             }
@@ -145,6 +147,10 @@ namespace Overcooked2DishwasherBot
             Status = "following waypoint " + (_pathCursor + 1) + "/" + _worldPath.Count;
             // While travelling between grid cells, do not exempt the eventual target's
             // colliders. Only the final facing/nudge step may intentionally touch it.
+            if (RejectPhysicallyBlockedPathEdge(player, toWaypoint.normalized))
+            {
+                return Vector3.zero;
+            }
             return SafeDirection(player, null, toWaypoint.normalized);
         }
 
@@ -249,22 +255,25 @@ namespace Overcooked2DishwasherBot
 
             GridManager playerGrid = GameUtils.GetGridManager(player.transform);
             StaticGridLocation registeredTargetLocation = FindRegisteredGridLocation(target);
-            GridManager targetGrid = registeredTargetLocation == null
-                ? GameUtils.GetGridManager(target.transform)
-                : registeredTargetLocation.AccessGridManager;
-            if (playerGrid == null || targetGrid == null || playerGrid != targetGrid)
+            if (playerGrid == null)
             {
                 _grid = null;
-                Status = "player and target are not on the same grid";
+                Status = "player has no navigation grid";
                 return;
             }
 
             _grid = playerGrid;
             GridIndex start = _grid.GetUnclampedGridLocationFromPos(player.transform.position);
             float walkingSurfaceY = GetWalkingSurfaceY(player);
-            GridIndex rawTargetIndex = registeredTargetLocation == null
-                ? _grid.GetUnclampedGridLocationFromPos(target.transform.position)
-                : registeredTargetLocation.GridIndex;
+            // Some kitchens register counters and stations on local GridManager instances
+            // even though chefs can walk between them on one continuous floor. A grid ID
+            // mismatch therefore does not mean the target is physically unreachable.
+            // Reuse a registered index only when it belongs to the player's current grid;
+            // otherwise project the target's world position onto the walking grid.
+            GridIndex rawTargetIndex = registeredTargetLocation != null
+                && registeredTargetLocation.AccessGridManager == playerGrid
+                    ? registeredTargetLocation.GridIndex
+                    : _grid.GetUnclampedGridLocationFromPos(target.transform.position);
 
             // A stack on a worktop is often one grid level above the chef. This search only
             // expands X/Z, so its goal must stay on the chef's current walking layer.
@@ -434,8 +443,7 @@ namespace Overcooked2DishwasherBot
                     GridIndex next = current + FourWayOffsets[i];
                     if (!Inside(next, halfSize)
                         || visited.Contains(next)
-                        || !IsWalkable(next, start, walkingSurfaceY)
-                        || !CanTraverse(current, next, walkingSurfaceY))
+                        || !IsWalkable(next, start, walkingSurfaceY))
                     {
                         continue;
                     }
@@ -522,7 +530,7 @@ namespace Overcooked2DishwasherBot
                     {
                         continue;
                     }
-                    if (!CanTraverse(current, next, walkingSurfaceY))
+                    if (_blockedPathEdges.Contains(new GridEdge(current, next)))
                     {
                         continue;
                     }
@@ -558,52 +566,34 @@ namespace Overcooked2DishwasherBot
             return occupant.CompareTag("Travelator") || occupant.CompareTag("MovingPlatform");
         }
 
-        private bool CanTraverse(GridIndex from, GridIndex to, float walkingSurfaceY)
+        private bool RejectPhysicallyBlockedPathEdge(PlayerControls player, Vector3 desired)
         {
-            Vector3 fromPosition = _grid.GetPosFromGridLocation(from);
-            Vector3 toPosition = _grid.GetPosFromGridLocation(to);
-            Vector3 delta = Flatten(toPosition - fromPosition);
-            float distance = delta.magnitude;
-            if (distance < 0.01f)
+            if (_grid == null
+                || _pathCursor < 0
+                || _pathCursor >= _worldPath.Count
+                || (HasGroundAhead(player, null, desired)
+                    && !HasStaticBlockingCollider(player, null, desired)))
             {
-                return true;
-            }
-
-            Vector3 origin = new Vector3(fromPosition.x, walkingSurfaceY + 0.42f, fromPosition.z);
-            int hitCount = Physics.SphereCastNonAlloc(
-                origin,
-                0.18f,
-                delta / distance,
-                _edgeHits,
-                distance,
-                -1,
-                QueryTriggerInteraction.Ignore);
-            for (int i = 0; i < hitCount; i++)
-            {
-                Collider collider = _edgeHits[i].collider;
-                if (collider == null || _edgeHits[i].distance < 0.04f)
-                {
-                    continue;
-                }
-                if (collider.GetComponentInParent<PlayerControls>() != null)
-                {
-                    continue;
-                }
-                Rigidbody body = collider.attachedRigidbody;
-                if (body != null && !body.isKinematic)
-                {
-                    continue;
-                }
-                if (collider.CompareTag("Travelator") || collider.CompareTag("MovingPlatform"))
-                {
-                    continue;
-                }
-                if (collider.bounds.max.y <= walkingSurfaceY + 0.16f)
-                {
-                    continue;
-                }
                 return false;
             }
+
+            GridIndex from = _grid.GetUnclampedGridLocationFromPos(player.transform.position);
+            GridIndex to = _grid.GetUnclampedGridLocationFromPos(_worldPath[_pathCursor]);
+            if (from == to)
+            {
+                return false;
+            }
+
+            _blockedPathEdges.Add(new GridEdge(from, to));
+            _blockedPathEdges.Add(new GridEdge(to, from));
+            _worldPath.Clear();
+            _pathCursor = 0;
+            _hasPath = false;
+            _hasCurrentGoal = false;
+            _nextRepathTime = 0f;
+            _avoidDirection = Vector3.zero;
+            _avoidUntil = 0f;
+            Status = "physical obstacle rejected current path edge";
             return true;
         }
 
@@ -854,6 +844,56 @@ namespace Overcooked2DishwasherBot
             return false;
         }
 
+        private static bool HasStaticBlockingCollider(PlayerControls player, GameObject target, Vector3 direction)
+        {
+            RaycastHit[] hits = Physics.SphereCastAll(
+                player.transform.position + Vector3.up * 0.45f,
+                0.2f,
+                direction,
+                0.55f,
+                -1,
+                QueryTriggerInteraction.Ignore);
+            GroundCast groundCast = player.GetComponent<GroundCast>();
+            ClientPlayerAttachmentCarrier carrier = player.GetComponent<ClientPlayerAttachmentCarrier>();
+            GameObject carried = carrier == null ? null : carrier.InspectCarriedItem();
+
+            for (int i = 0; i < hits.Length; i++)
+            {
+                Collider collider = hits[i].collider;
+                if (collider == null || IsPartOf(collider.transform, player.gameObject))
+                {
+                    continue;
+                }
+                if (target != null && IsRelatedTo(collider.transform, target.transform))
+                {
+                    continue;
+                }
+                if (carried != null && IsPartOf(collider.transform, carried))
+                {
+                    continue;
+                }
+                if (collider.GetComponentInParent<PlayerControls>() != null)
+                {
+                    continue;
+                }
+                Rigidbody body = collider.attachedRigidbody;
+                if (body != null && !body.isKinematic)
+                {
+                    continue;
+                }
+                if (groundCast != null && collider == groundCast.GetGroundCollider())
+                {
+                    continue;
+                }
+                if (collider.CompareTag("Travelator") || collider.CompareTag("MovingPlatform"))
+                {
+                    continue;
+                }
+                return true;
+            }
+            return false;
+        }
+
         private static float GetWalkingSurfaceY(PlayerControls player)
         {
             GroundCast groundCast = player == null ? null : player.GetComponent<GroundCast>();
@@ -878,6 +918,36 @@ namespace Overcooked2DishwasherBot
         {
             value.y = 0f;
             return value;
+        }
+
+        private struct GridEdge : IEquatable<GridEdge>
+        {
+            internal readonly GridIndex From;
+            internal readonly GridIndex To;
+
+            internal GridEdge(GridIndex from, GridIndex to)
+            {
+                From = from;
+                To = to;
+            }
+
+            public bool Equals(GridEdge other)
+            {
+                return From == other.From && To == other.To;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is GridEdge && Equals((GridEdge)obj);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    return (From.GetHashCode() * 397) ^ To.GetHashCode();
+                }
+            }
         }
     }
 }

@@ -2,7 +2,14 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.2.1**.
+Current version: **1.2.2**.
+
+### 1.2.2 connected-kitchen navigation fix
+
+- Projects every target onto the chef's current walking grid when the target's `StaticGridLocation` belongs to a different local grid, rather than treating different `GridManager` instances as physically disconnected kitchens.
+- Replaces the eager physics scan of every BFS edge from 1.2.1, which could mistake protruding scenery for a sealed passage and divide a connected map into left/right regions.
+- Static obstacles are now learned only when the chef actually reaches a blocked path edge. That edge is rejected for the current target and BFS immediately searches for another route.
+- Keeps the stricter floor-height and final-approach checks from 1.2.1, so counter tops are still excluded and the bot still stops instead of walking straight into an obstruction.
 
 ### 1.2.1 static-obstacle pathfinding fix
 
