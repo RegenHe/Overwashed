@@ -14,7 +14,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overcooked 2 Dishwasher Bot";
-        public const string PluginVersion = "1.1.1";
+        public const string PluginVersion = "1.2.0";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -23,12 +23,15 @@ namespace Overcooked2DishwasherBot
         private static readonly MethodInfo SendChefEvent = ResolveChefEventSender();
 
         private readonly GridPathNavigator _navigator = new GridPathNavigator();
+        private readonly AutoServePlanner _servePlanner = new AutoServePlanner();
         private readonly HashSet<string> _reportedErrors = new HashSet<string>();
         private readonly List<Vector3> _avoidanceThreats = new List<Vector3>();
 
         private ManualLogSource _log;
         private ConfigEntry<bool> _autoAvoidance;
         private ConfigEntry<float> _avoidanceDistance;
+        private ConfigEntry<bool> _autoServeReadyOrders;
+        private ConfigEntry<bool> _serveInOrder;
         private bool _enabled;
         private bool _showSettings;
         private bool _avoidingPlayers;
@@ -37,6 +40,8 @@ namespace Overcooked2DishwasherBot
         private BotInputBinding _input;
         private ClientDirtyPlateStack _dirtyTarget;
         private ClientWashingStation _sinkTarget;
+        private AutoServePlan _servePlan;
+        private ServePhase _servePhase;
         private BotState _state = BotState.Disabled;
         private float _pickupDownUntil;
         private float _placementPendingUntil;
@@ -46,6 +51,9 @@ namespace Overcooked2DishwasherBot
         private float _nextSinkScanTime;
         private float _nextDropRequestTime;
         private float _dirtyInteractionCellSince;
+        private float _serveInteractionCellSince;
+        private float _nextServeScanTime;
+        private float _servePendingUntil;
         private int _droppingItemId;
         private GameObject _lastDirtyInteractionTarget;
         private Texture2D _statusBackground;
@@ -62,8 +70,24 @@ namespace Overcooked2DishwasherBot
             MovingToSink,
             PlacingInSink,
             Washing,
+            MovingToReadyMeal,
+            PickingUpReadyMeal,
+            MovingToCleanPlate,
+            PickingUpCleanPlate,
+            PlatingMeal,
+            MovingToServingStation,
+            ServingMeal,
             AvoidingPlayers,
             Waiting
+        }
+
+        private enum ServePhase
+        {
+            None,
+            PickingReadyPlate,
+            PickingCleanPlate,
+            PlatingMeal,
+            Delivering
         }
 
         private void Awake()
@@ -81,6 +105,16 @@ namespace Overcooked2DishwasherBot
                 new ConfigDescription(
                     "Distance in grid tiles at which the bot starts avoiding another chef.",
                     new AcceptableValueRange<float>(0.5f, 4f)));
+            _autoServeReadyOrders = Config.Bind(
+                "Serving",
+                "AutoServeReadyOrders",
+                false,
+                "Automatically plate completed meals when necessary and deliver matching active orders.");
+            _serveInOrder = Config.Bind(
+                "Serving",
+                "ServeInOrder",
+                true,
+                "Only serve the oldest active order. Disable to serve any matching active order.");
             CreateStatusBadgeTextures();
             _log.LogInfo(PluginName + " " + PluginVersion + " loaded. Press F8 to toggle; click the active bot icon for settings.");
             if (ClientSinkPlateCount == null)
@@ -169,7 +203,7 @@ namespace Overcooked2DishwasherBot
         private void DrawSettingsPanel()
         {
             const float width = 286f;
-            const float height = 142f;
+            const float height = 202f;
             float left = Mathf.Max(8f, Screen.width - width - 12f);
             Rect panel = new Rect(left, 52f, width, height);
 
@@ -204,8 +238,28 @@ namespace Overcooked2DishwasherBot
                 _avoidanceDistance.Value = distance;
             }
 
-            GUI.Label(
+            bool autoServe = GUI.Toggle(
                 new Rect(panel.x + 16f, panel.y + 110f, panel.width - 32f, 22f),
+                _autoServeReadyOrders.Value,
+                "Auto serve completed orders");
+            if (autoServe != _autoServeReadyOrders.Value)
+            {
+                _autoServeReadyOrders.Value = autoServe;
+                ResetServingPlan(true);
+            }
+
+            bool serveInOrder = GUI.Toggle(
+                new Rect(panel.x + 16f, panel.y + 136f, panel.width - 32f, 22f),
+                _serveInOrder.Value,
+                "Serve in order");
+            if (serveInOrder != _serveInOrder.Value)
+            {
+                _serveInOrder.Value = serveInOrder;
+                ResetServingPlan(true);
+            }
+
+            GUI.Label(
+                new Rect(panel.x + 16f, panel.y + 170f, panel.width - 32f, 22f),
                 "Click the bot icon to close settings");
         }
 
@@ -306,10 +360,15 @@ namespace Overcooked2DishwasherBot
             _nextSinkScanTime = 0f;
             _nextDropRequestTime = 0f;
             _dirtyInteractionCellSince = 0f;
+            _serveInteractionCellSince = 0f;
+            _nextServeScanTime = 0f;
+            _servePendingUntil = 0f;
             _droppingItemId = 0;
             _lastDirtyInteractionTarget = null;
             _avoidingPlayers = false;
             _avoidanceThreats.Clear();
+            _servePlan = null;
+            _servePhase = ServePhase.None;
 
             if (enabled)
             {
@@ -440,7 +499,9 @@ namespace Overcooked2DishwasherBot
             SetMove(Vector3.zero);
 
             GameObject carried = _carrier.InspectCarriedItem();
-            if (carried != null && carried.GetComponent<DirtyPlateStack>() == null)
+            bool carryingDirtyPlates = carried != null && carried.GetComponent<DirtyPlateStack>() != null;
+            bool carryingPlate = carried != null && carried.GetComponent<ClientPlate>() != null;
+            if (carried != null && !carryingDirtyPlates && (!carryingPlate || !_autoServeReadyOrders.Value))
             {
                 DropUnexpectedItem(carried);
                 return;
@@ -449,6 +510,17 @@ namespace Overcooked2DishwasherBot
 
             if (TryAvoidPlayers())
             {
+                return;
+            }
+
+            if (_autoServeReadyOrders.Value && TryAutoServe(carried))
+            {
+                return;
+            }
+
+            if (carried != null && !carryingDirtyPlates)
+            {
+                DropUnexpectedItem(carried);
                 return;
             }
 
@@ -520,6 +592,382 @@ namespace Overcooked2DishwasherBot
             }
 
             MoveToDirtyPlates(_dirtyTarget);
+        }
+
+        private bool TryAutoServe(GameObject carried)
+        {
+            if (_autoServeReadyOrders == null || !_autoServeReadyOrders.Value || _player == null || _carrier == null)
+            {
+                ResetServingPlan(false);
+                return false;
+            }
+
+            ClientPlate carriedPlate = carried == null ? null : carried.GetComponent<ClientPlate>();
+            if (carriedPlate != null)
+            {
+                if (_servePhase == ServePhase.Delivering && Time.time < _servePendingUntil)
+                {
+                    SetState(BotState.ServingMeal);
+                    return true;
+                }
+
+                RecipeList.Entry matchingOrder;
+                string error;
+                if (_servePlanner.TryFindMatchingOrder(
+                    _player,
+                    carriedPlate,
+                    _serveInOrder.Value,
+                    out matchingOrder,
+                    out error))
+                {
+                    if (_servePlan == null || _servePlan.Order != matchingOrder)
+                    {
+                        _servePlan = new AutoServePlan
+                        {
+                            Order = matchingOrder,
+                            ReadyPlate = carriedPlate,
+                            ServingStation = _servePlanner.FindServingStation(_player)
+                        };
+                    }
+                    else if (_servePlan.ServingStation == null)
+                    {
+                        _servePlan.ServingStation = _servePlanner.FindServingStation(_player);
+                    }
+
+                    if (_servePlan.ServingStation == null)
+                    {
+                        ResetServingPlan(false);
+                        return false;
+                    }
+
+                    _servePhase = ServePhase.Delivering;
+                    MoveServingPlateToStation(_servePlan.ServingStation);
+                    return true;
+                }
+                if (!string.IsNullOrEmpty(error))
+                {
+                    ReportErrorOnce("auto-serve-orders:" + error, "Could not inspect active orders: " + error);
+                }
+
+                if (AutoServePlanner.IsEmptyPlate(carriedPlate)
+                    && _servePlan != null
+                    && _servePlan.NeedsPlating)
+                {
+                    if (Time.time < _servePendingUntil && _servePhase == ServePhase.PlatingMeal)
+                    {
+                        SetState(BotState.PlatingMeal);
+                        return true;
+                    }
+                    if (_servePlanner.MealStillMatches(_servePlan.UnplatedMeal, _servePlan.Order))
+                    {
+                        _servePhase = ServePhase.PlatingMeal;
+                        MovePlateToCompletedMeal(_servePlan.UnplatedMeal);
+                        return true;
+                    }
+                }
+
+                ResetServingPlan(false);
+                return false;
+            }
+
+            if (carried != null)
+            {
+                ResetServingPlan(false);
+                return false;
+            }
+
+            if (Time.time < _servePendingUntil)
+            {
+                SetState(_servePhase == ServePhase.Delivering ? BotState.ServingMeal : GetServingWaitingState());
+                return true;
+            }
+
+            if (_servePhase == ServePhase.Delivering)
+            {
+                ResetServingPlan(true);
+            }
+            else if (_servePhase == ServePhase.PickingReadyPlate
+                && _servePlan != null
+                && IsActive(_servePlan.ReadyPlate))
+            {
+                MoveToServingPlate(_servePlan.ReadyPlate, false);
+                return true;
+            }
+            else if (_servePhase == ServePhase.PickingCleanPlate
+                && _servePlan != null
+                && IsActive(_servePlan.EmptyPlate)
+                && AutoServePlanner.IsEmptyPlate(_servePlan.EmptyPlate)
+                && _servePlanner.MealStillMatches(_servePlan.UnplatedMeal, _servePlan.Order))
+            {
+                MoveToServingPlate(_servePlan.EmptyPlate, true);
+                return true;
+            }
+            else if (_servePhase != ServePhase.None)
+            {
+                ResetServingPlan(true);
+            }
+
+            if (Time.time < _nextServeScanTime)
+            {
+                return false;
+            }
+            _nextServeScanTime = Time.time + 0.5f;
+
+            AutoServePlan plan;
+            string planningError;
+            if (!_servePlanner.TryBuildPlan(_player, _serveInOrder.Value, out plan, out planningError))
+            {
+                if (!string.IsNullOrEmpty(planningError))
+                {
+                    ReportErrorOnce(
+                        "auto-serve-plan:" + planningError,
+                        "Could not build an automatic serving plan: " + planningError);
+                }
+                return false;
+            }
+
+            _servePlan = plan;
+            _serveInteractionCellSince = 0f;
+            _navigator.Clear();
+            if (plan.ReadyPlate != null)
+            {
+                _servePhase = ServePhase.PickingReadyPlate;
+                MoveToServingPlate(plan.ReadyPlate, false);
+            }
+            else
+            {
+                _servePhase = ServePhase.PickingCleanPlate;
+                MoveToServingPlate(plan.EmptyPlate, true);
+            }
+            return true;
+        }
+
+        private BotState GetServingWaitingState()
+        {
+            switch (_servePhase)
+            {
+                case ServePhase.PickingReadyPlate:
+                    return BotState.PickingUpReadyMeal;
+                case ServePhase.PickingCleanPlate:
+                    return BotState.PickingUpCleanPlate;
+                case ServePhase.PlatingMeal:
+                    return BotState.PlatingMeal;
+                default:
+                    return BotState.Waiting;
+            }
+        }
+
+        private void MoveToServingPlate(ClientPlate plate, bool cleanPlate)
+        {
+            if (!IsActive(plate))
+            {
+                ResetServingPlan(true);
+                return;
+            }
+
+            GameObject target = ResolveServeInteractionTarget(plate.gameObject, true);
+            bool atCell;
+            Vector3 direction = _navigator.DirectionTo(_player, target, true, out atCell);
+            if (IsPickupSelected(plate.gameObject))
+            {
+                _serveInteractionCellSince = 0f;
+                SetMove(Vector3.zero);
+                SetState(cleanPlate ? BotState.PickingUpCleanPlate : BotState.PickingUpReadyMeal);
+                PulseServingAction(0.8f);
+                return;
+            }
+
+            SetState(cleanPlate ? BotState.MovingToCleanPlate : BotState.MovingToReadyMeal);
+            SetMove(direction);
+            UpdateServingInteractionCell(atCell);
+        }
+
+        private void MovePlateToCompletedMeal(GameObject meal)
+        {
+            GameObject target = ResolveServeInteractionTarget(meal, false);
+            bool atCell;
+            Vector3 direction = _navigator.DirectionTo(_player, target, true, out atCell);
+            if (IsPlacementSelected(meal))
+            {
+                _serveInteractionCellSince = 0f;
+                SetMove(Vector3.zero);
+                SetState(BotState.PlatingMeal);
+                PulseServingAction(0.8f);
+                return;
+            }
+
+            SetState(BotState.PlatingMeal);
+            SetMove(direction);
+            UpdateServingInteractionCell(atCell);
+        }
+
+        private void MoveServingPlateToStation(ClientPlateStation station)
+        {
+            if (station == null || !station.enabled || !station.gameObject.activeInHierarchy)
+            {
+                ResetServingPlan(true);
+                return;
+            }
+
+            ClientAttachStation attachStation = station.GetComponent<ClientAttachStation>();
+            GameObject navigationTarget = attachStation == null
+                ? station.gameObject
+                : GetAttachPointOrStation(attachStation);
+            bool atCell;
+            Vector3 direction = _navigator.DirectionTo(_player, navigationTarget, true, out atCell);
+            if (IsPlacementSelected(station.gameObject))
+            {
+                _serveInteractionCellSince = 0f;
+                SetMove(Vector3.zero);
+                SetState(BotState.ServingMeal);
+                PulseServingAction(1.0f);
+                return;
+            }
+
+            SetState(BotState.MovingToServingStation);
+            SetMove(direction);
+            UpdateServingInteractionCell(atCell);
+        }
+
+        private void PulseServingAction(float pendingSeconds)
+        {
+            if (Time.time < _nextActionTime)
+            {
+                return;
+            }
+            PulsePickup();
+            _servePendingUntil = Time.time + pendingSeconds;
+        }
+
+        private void UpdateServingInteractionCell(bool atCell)
+        {
+            if (!atCell)
+            {
+                _serveInteractionCellSince = 0f;
+                return;
+            }
+            if (_serveInteractionCellSince <= 0f)
+            {
+                _serveInteractionCellSince = Time.time;
+            }
+            else if (Time.time - _serveInteractionCellSince >= 0.75f)
+            {
+                _navigator.RejectCurrentInteractionCell();
+                _serveInteractionCellSince = 0f;
+            }
+        }
+
+        private bool IsPickupSelected(GameObject target)
+        {
+            PlayerControls.InteractionObjects interaction = _player.CurrentInteractionObjects;
+            if (interaction == null || interaction.m_iHandlePickup == null || target == null)
+            {
+                return false;
+            }
+            try
+            {
+                IClientHandlePickup expected = PlayerControlsHelper.GetControllingPickupHandler_Client(target);
+                bool sameHandler = expected != null && ReferenceEquals(expected, interaction.m_iHandlePickup);
+                bool sameObject = IsSameObjectHierarchy(interaction.m_TheOriginalHandlePickup, target);
+                return (sameHandler || sameObject) && interaction.m_iHandlePickup.CanHandlePickup(_carrier);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool IsPlacementSelected(GameObject target)
+        {
+            PlayerControls.InteractionObjects interaction = _player.CurrentInteractionObjects;
+            if (interaction == null || interaction.m_iHandlePlacement == null || target == null)
+            {
+                return false;
+            }
+            try
+            {
+                IClientHandlePlacement expected = PlayerControlsHelper.GetControllingPlacementHandler_Client(target);
+                bool sameHandler = expected != null && ReferenceEquals(expected, interaction.m_iHandlePlacement);
+                bool sameObject = IsSameObjectHierarchy(interaction.m_TheOriginalHandlePickup, target);
+                if (!sameHandler && !sameObject)
+                {
+                    return false;
+                }
+                Vector3 forward = _player.transform.forward;
+                Vector2 direction = new Vector2(forward.x, forward.z).normalized;
+                return interaction.m_iHandlePlacement.CanHandlePlacement(
+                    _carrier,
+                    direction,
+                    new PlacementContext(PlacementContext.Source.Player));
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static GameObject ResolveServeInteractionTarget(GameObject target, bool pickup)
+        {
+            if (target == null)
+            {
+                return null;
+            }
+
+            MonoBehaviour handler = null;
+            if (pickup)
+            {
+                ClientHandlePickupReferral referral = target.GetComponent<ClientHandlePickupReferral>();
+                if (referral != null)
+                {
+                    handler = referral.GetHandlePickupReferree() as MonoBehaviour;
+                }
+            }
+            else
+            {
+                ClientHandlePlacementReferral referral = target.GetComponent<ClientHandlePlacementReferral>();
+                if (referral != null)
+                {
+                    handler = referral.GetHandlePlacementReferree() as MonoBehaviour;
+                }
+            }
+
+            ClientAttachStation station = handler as ClientAttachStation;
+            if (station == null)
+            {
+                station = target.GetComponentInParent<ClientAttachStation>();
+            }
+            if (station != null)
+            {
+                return GetAttachPointOrStation(station);
+            }
+            return handler == null ? target : handler.gameObject;
+        }
+
+        private static bool IsSameObjectHierarchy(GameObject left, GameObject right)
+        {
+            return left != null
+                && right != null
+                && (left == right
+                    || left.transform.IsChildOf(right.transform)
+                    || right.transform.IsChildOf(left.transform));
+        }
+
+        private static bool IsActive(MonoBehaviour behaviour)
+        {
+            return behaviour != null && behaviour.enabled && behaviour.gameObject.activeInHierarchy;
+        }
+
+        private void ResetServingPlan(bool clearNavigator)
+        {
+            _servePlan = null;
+            _servePhase = ServePhase.None;
+            _servePendingUntil = 0f;
+            _serveInteractionCellSince = 0f;
+            _nextServeScanTime = 0f;
+            if (clearNavigator)
+            {
+                _navigator.Clear();
+            }
         }
 
         private bool TryAvoidPlayers()
@@ -1018,6 +1466,7 @@ namespace Overcooked2DishwasherBot
         {
             _avoidingPlayers = false;
             _avoidanceThreats.Clear();
+            ResetServingPlan(false);
             ReleaseRobotInputs(true);
             _navigator.Clear();
             _dirtyTarget = null;

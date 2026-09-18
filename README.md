@@ -2,7 +2,15 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.1.1**.
+Current version: **1.2.0**.
+
+### 1.2.0 optional automatic serving
+
+- Adds `Auto serve completed orders`, disabled by default. When enabled, the bot reads the team's live order list and serves an already completed matching plate before returning to dishwashing.
+- If the completed meal is not plated, the bot finds a compatible empty plate, picks it up through the game's normal input path, plates the meal, and delivers it to the team's serving station.
+- Adds `Serve in order`, enabled by default. When enabled only the oldest active order is eligible; when disabled the bot prefers the nearest ready active order.
+- Recipe matching uses the game's `AssembledDefinitionNode.Matching` logic, including wildcard orders. No recipe names or map coordinates are hard-coded.
+- Both options are available in the panel opened by clicking the top-right bot icon and are saved by BepInEx.
 
 ### 1.1.1 settings access and default
 
@@ -93,7 +101,7 @@ The project and build script reference the game's own Mono/.NET, Unity, `Assembl
 
 ## Runtime states and logging
 
-The bot logs keyboard-player detection, target selection, state changes, waits, and exceptions to `BepInEx\LogOutput.log`. Its loop is:
+Production logging is limited to plugin load, F8 enable/disable, compatibility warnings, and deduplicated errors. Its normal dishwashing loop is:
 
 1. Find an active `ClientDirtyPlateStack` with `GetCount() > 0`.
 2. Navigate to an adjacent walkable grid cell using `GridManager` occupancy and physics ground checks.
@@ -101,4 +109,4 @@ The bot logs keyboard-player detection, target selection, state changes, waits, 
 4. Find the nearest active `ClientWashingStation`, navigate, and feed the normal placement button.
 5. Hold the normal workstation-interact input until `m_plateCount` reaches zero.
 
-If the keyboard chef is carrying any non-dirty item when enabled, the bot waits instead of throwing away the player's item.
+If automatic serving is disabled, or a carried item is not a plate matching an eligible active order, the bot drops the unexpected item on the floor and resumes work.

@@ -20,3 +20,9 @@ These names and signatures were taken from the locally installed `Overcooked2_Da
 - `ClientChefSynchroniser.FixedUpdate()` calls `RunCorrection()` for the locally controlled remote chef and corrects client prediction toward the server-authoritative position. `ClientOnTheServerChefSynchroniser` does not have this remote correction path.
 - `GridManager`: `GetGridLocationFromPos`, `GetUnclampedGridLocationFromPos`, `GetPosFromGridLocation`, `GetGridOccupant`, `GetGridHalfSize`.
 - `InteractWithItemHelper` confirms kitchen interaction scans use the four cardinal grid neighbours and a one-unit interaction radius.
+- `ClientKitchenFlowControllerBase.GetMonitorForTeam(TeamID)` provides the local team's `ClientTeamMonitor`; its `OrdersController` points to `ClientOrderControllerBase`.
+- `ClientOrderControllerBase.m_activeOrders` contains the live display order, and each nested `ActiveOrder.RecipeListEntry` points to the required `OrderDefinitionNode`.
+- `ClientPlate.GetOrderComposition()` and other `IClientOrderDefinition` implementations expose the assembled contents of plated and unplated meals.
+- Server order validation first requires `OrderDefinitionNode.m_platingStep` to match the plate and then calls `AssembledDefinitionNode.Matching`; wildcard recipes reverse the normal matching argument order.
+- `ClientPlateStation` is the client serving handler and its `PlateStation.m_teamId` identifies the station belonging to the keyboard chef's team.
+- `ClientPlacementContainer.CanHandlePlacement(...)` performs symmetric combination, allowing an empty carried plate to collect a matching completed meal through the normal placement input.
