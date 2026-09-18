@@ -2,7 +2,15 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.2.2**.
+Current version: **1.3.0**.
+
+### 1.3.0 native navigation rewrite
+
+- Replaces the Mod's accumulated custom BFS, ground-ray, local-grid projection, static-edge blacklist, and steering heuristics with the game's confirmed `GridNavSpace.GetNavPoint` and `GridNavSpace.FindPath` APIs.
+- Uses the same global static kitchen navigation map that the game's `GridNavigator` consumes, avoiding disagreements between local station grids and the actual connected floor layout.
+- The Mod now only chooses a reachable interaction cell, follows the native route, waits for temporary chef obstructions, and asks the game for a fresh route when forward progress stops.
+- Adds an explicit final facing phase. At the interaction cell the bot sends a maximum `0.22`-second normal movement-input burst toward the target, then stops; this rotates through the normal host/client input pipeline without returning to unlimited straight-line pushing.
+- Keeps adaptive interaction-cell rejection: if the game's pickup/placement scan still does not select the target, another reachable side is tried.
 
 ### 1.2.2 connected-kitchen navigation fix
 

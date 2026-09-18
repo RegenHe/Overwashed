@@ -6,8 +6,6 @@ namespace Overcooked2DishwasherBot
 {
     internal sealed class GridPathNavigator
     {
-        private const float MaximumWalkableHeightDifference = 0.45f;
-
         private static readonly GridIndex[] FourWayOffsets =
         {
             new GridIndex(1, 0, 0),
@@ -18,39 +16,37 @@ namespace Overcooked2DishwasherBot
 
         private readonly List<Vector3> _worldPath = new List<Vector3>();
         private readonly HashSet<GridIndex> _rejectedInteractionCells = new HashSet<GridIndex>(default(GridIndex));
-        private readonly HashSet<GridEdge> _blockedPathEdges = new HashSet<GridEdge>();
         private GameObject _target;
-        private GridManager _grid;
+        private GridNavSpace _navSpace;
+        private GridManager _navGrid;
         private GridIndex _currentGoal;
         private bool _hasCurrentGoal;
         private bool _searchAllNeighbourCells;
+        private bool _routeFound;
+        private bool _avoidanceMode;
         private int _pathCursor;
         private float _nextRepathTime;
-        private Vector3 _lastPlayerPosition;
-        private float _stuckSince;
-        private bool _hasPath;
-        private bool _avoidanceMode;
-        private Vector3 _avoidDirection;
-        private float _avoidUntil;
+        private float _lastWaypointDistance;
+        private float _lastProgressTime;
+        private float _facingStartedTime;
 
         internal string Status { get; private set; }
 
         internal void Clear()
         {
             _worldPath.Clear();
+            _rejectedInteractionCells.Clear();
             _target = null;
-            _grid = null;
-            _pathCursor = 0;
-            _nextRepathTime = 0f;
-            _stuckSince = 0f;
-            _hasPath = false;
-            _avoidanceMode = false;
+            _navSpace = null;
+            _navGrid = null;
             _hasCurrentGoal = false;
             _searchAllNeighbourCells = false;
-            _rejectedInteractionCells.Clear();
-            _blockedPathEdges.Clear();
-            _avoidDirection = Vector3.zero;
-            _avoidUntil = 0f;
+            _routeFound = false;
+            _avoidanceMode = false;
+            _pathCursor = 0;
+            _nextRepathTime = 0f;
+            _facingStartedTime = 0f;
+            ResetProgressTracking();
             Status = "cleared";
         }
 
@@ -71,87 +67,76 @@ namespace Overcooked2DishwasherBot
                 return Vector3.zero;
             }
 
-            Vector3 playerPosition = player.transform.position;
-            Vector3 targetPosition = target.transform.position;
-            Vector3 direct = Flatten(targetPosition - playerPosition);
-
-            if (!searchAllNeighbourCells && direct.sqrMagnitude < 0.65f * 0.65f)
-            {
-                atInteractionCell = true;
-                Status = "inside interaction distance";
-                return FinalApproachDirection(
-                    player,
-                    target,
-                    direct.sqrMagnitude > 0.01f ? direct.normalized : player.transform.forward);
-            }
-
-            bool moved = Flatten(playerPosition - _lastPlayerPosition).sqrMagnitude > 0.015f * 0.015f;
-            if (moved)
-            {
-                _lastPlayerPosition = playerPosition;
-                _stuckSince = Time.time;
-            }
-            else if (_stuckSince <= 0f)
-            {
-                _stuckSince = Time.time;
-            }
-
             bool targetChanged = _avoidanceMode
                 || _target != target
                 || _searchAllNeighbourCells != searchAllNeighbourCells;
             if (targetChanged)
             {
-                _rejectedInteractionCells.Clear();
-                _blockedPathEdges.Clear();
-                _hasCurrentGoal = false;
-                _searchAllNeighbourCells = searchAllNeighbourCells;
-            }
-            bool stuck = Time.time - _stuckSince > 1.25f;
-            if (targetChanged || Time.time >= _nextRepathTime || stuck)
-            {
                 _target = target;
-                BuildPath(player, target, searchAllNeighbourCells);
-                _nextRepathTime = Time.time + (stuck ? 0.35f : 0.9f);
-                if (stuck)
+                _avoidanceMode = false;
+                _searchAllNeighbourCells = searchAllNeighbourCells;
+                _rejectedInteractionCells.Clear();
+                ClearRoute();
+                _facingStartedTime = 0f;
+                _nextRepathTime = 0f;
+            }
+
+            if (Time.time >= _nextRepathTime)
+            {
+                BuildTargetRoute(player, target, searchAllNeighbourCells);
+                _nextRepathTime = Time.time + (_routeFound ? 1f : 0.4f);
+            }
+
+            Vector3 playerPosition = player.transform.position;
+            AdvancePastReachedWaypoints(playerPosition);
+            if (_pathCursor < _worldPath.Count)
+            {
+                Vector3 toWaypoint = Flatten(_worldPath[_pathCursor] - playerPosition);
+                if (TrackProgressAndNeedsRepath(toWaypoint.magnitude))
                 {
-                    _stuckSince = Time.time;
+                    BuildTargetRoute(player, target, searchAllNeighbourCells);
+                    _nextRepathTime = Time.time + 0.4f;
+                    AdvancePastReachedWaypoints(playerPosition);
+                    if (_pathCursor >= _worldPath.Count)
+                    {
+                        return Vector3.zero;
+                    }
+                    toWaypoint = Flatten(_worldPath[_pathCursor] - playerPosition);
                 }
+
+                Status = "following game route " + (_pathCursor + 1) + "/" + _worldPath.Count;
+                return SafeMovementDirection(player, toWaypoint.normalized);
             }
 
-            while (_pathCursor < _worldPath.Count
-                && Flatten(_worldPath[_pathCursor] - playerPosition).sqrMagnitude < 0.38f * 0.38f)
+            if (!_routeFound)
             {
-                _pathCursor++;
-            }
-
-            if (_pathCursor >= _worldPath.Count)
-            {
-                if (!_hasPath)
-                {
-                    Status = "no reachable adjacent cell";
-                    return Vector3.zero;
-                }
-                atInteractionCell = true;
-                Status = "at interaction cell";
-                return FinalApproachDirection(player, target, direct.normalized);
-            }
-
-            Vector3 toWaypoint = Flatten(_worldPath[_pathCursor] - playerPosition);
-            if (_pathCursor == _worldPath.Count - 1 && toWaypoint.sqrMagnitude < 0.35f * 0.35f)
-            {
-                atInteractionCell = true;
-                Status = "approaching target from final cell";
-                return FinalApproachDirection(player, target, direct.normalized);
-            }
-
-            Status = "following waypoint " + (_pathCursor + 1) + "/" + _worldPath.Count;
-            // While travelling between grid cells, do not exempt the eventual target's
-            // colliders. Only the final facing/nudge step may intentionally touch it.
-            if (RejectPhysicallyBlockedPathEdge(player, toWaypoint.normalized))
-            {
+                Status = "game navigation found no route";
                 return Vector3.zero;
             }
-            return SafeDirection(player, null, toWaypoint.normalized);
+
+            if (_hasCurrentGoal
+                && _navGrid != null
+                && _navGrid.GetGridLocationFromPos(playerPosition) != _currentGoal)
+            {
+                _facingStartedTime = 0f;
+                BuildTargetRoute(player, target, searchAllNeighbourCells);
+                _nextRepathTime = Time.time + 0.4f;
+                AdvancePastReachedWaypoints(playerPosition);
+                if (_pathCursor < _worldPath.Count)
+                {
+                    Vector3 backToGoal = Flatten(_worldPath[_pathCursor] - playerPosition);
+                    Status = "returning to interaction cell after facing movement";
+                    return SafeMovementDirection(player, backToGoal.normalized);
+                }
+                if (!_routeFound)
+                {
+                    return Vector3.zero;
+                }
+            }
+
+            atInteractionCell = true;
+            Vector3 direct = Flatten(target.transform.position - playerPosition);
+            return FaceInteractionTarget(player, direct);
         }
 
         internal Vector3 DirectionAwayFrom(
@@ -166,64 +151,35 @@ namespace Overcooked2DishwasherBot
                 return Vector3.zero;
             }
 
-            Vector3 playerPosition = player.transform.position;
-            bool moved = Flatten(playerPosition - _lastPlayerPosition).sqrMagnitude > 0.015f * 0.015f;
-            if (moved)
-            {
-                _lastPlayerPosition = playerPosition;
-                _stuckSince = Time.time;
-            }
-            else if (_stuckSince <= 0f)
-            {
-                _stuckSince = Time.time;
-            }
-
             if (!_avoidanceMode)
             {
-                _worldPath.Clear();
-                _pathCursor = 0;
-                _target = null;
-                _hasPath = false;
-                _hasCurrentGoal = false;
                 _avoidanceMode = true;
+                _target = null;
+                _rejectedInteractionCells.Clear();
+                ClearRoute();
+                _facingStartedTime = 0f;
                 _nextRepathTime = 0f;
             }
 
-            bool stuck = Time.time - _stuckSince > 0.9f;
-            if (Time.time >= _nextRepathTime || stuck)
+            if (Time.time >= _nextRepathTime)
             {
-                BuildAvoidancePath(player, threatPositions, safeDistance);
-                _nextRepathTime = Time.time + (stuck ? 0.15f : 0.3f);
-                if (stuck)
-                {
-                    _stuckSince = Time.time;
-                }
+                BuildAvoidanceRoute(player, threatPositions, safeDistance);
+                _nextRepathTime = Time.time + (_routeFound ? 0.35f : 0.2f);
             }
 
-            while (_pathCursor < _worldPath.Count
-                && Flatten(_worldPath[_pathCursor] - playerPosition).sqrMagnitude < 0.32f * 0.32f)
+            Vector3 playerPosition = player.transform.position;
+            AdvancePastReachedWaypoints(playerPosition);
+            if (_pathCursor >= _worldPath.Count)
             {
-                _pathCursor++;
+                hasEscapePath = _routeFound;
+                Status = _routeFound ? "at avoidance goal" : "game navigation found no escape route";
+                return Vector3.zero;
             }
 
-            if (_pathCursor < _worldPath.Count)
-            {
-                hasEscapePath = true;
-                Vector3 toWaypoint = Flatten(_worldPath[_pathCursor] - playerPosition);
-                Status = "avoiding player via waypoint " + (_pathCursor + 1) + "/" + _worldPath.Count;
-                return SafeDirection(player, null, toWaypoint.normalized);
-            }
-
-            Vector3 fallback = CalculateRepulsion(playerPosition, threatPositions, player.transform.forward);
-            if (!_hasPath && fallback.sqrMagnitude > 0.001f)
-            {
-                Status = "no grid escape path; using safe repulsion";
-                return SafeDirection(player, null, fallback.normalized);
-            }
-
-            hasEscapePath = _hasPath;
-            Status = "at avoidance goal";
-            return Vector3.zero;
+            hasEscapePath = true;
+            Vector3 toWaypoint = Flatten(_worldPath[_pathCursor] - playerPosition);
+            Status = "avoiding player via game route " + (_pathCursor + 1) + "/" + _worldPath.Count;
+            return SafeMovementDirection(player, toWaypoint.normalized);
         }
 
         internal bool RejectCurrentInteractionCell()
@@ -234,53 +190,31 @@ namespace Overcooked2DishwasherBot
             }
 
             _rejectedInteractionCells.Add(_currentGoal);
-            _worldPath.Clear();
-            _pathCursor = 0;
-            _hasPath = false;
-            _hasCurrentGoal = false;
+            ClearRoute();
+            _facingStartedTime = 0f;
             _nextRepathTime = 0f;
-            _avoidDirection = Vector3.zero;
-            _avoidUntil = 0f;
             Status = "interaction cell rejected";
             return true;
         }
 
-        private void BuildPath(PlayerControls player, GameObject target, bool searchAllNeighbourCells)
+        private void BuildTargetRoute(PlayerControls player, GameObject target, bool searchAllNeighbourCells)
         {
-            _worldPath.Clear();
-            _pathCursor = 0;
-            _hasPath = false;
-            _hasCurrentGoal = false;
-            _avoidanceMode = false;
-
-            GridManager playerGrid = GameUtils.GetGridManager(player.transform);
-            StaticGridLocation registeredTargetLocation = FindRegisteredGridLocation(target);
-            if (playerGrid == null)
+            ClearRoute();
+            if (!EnsureGameNavigation())
             {
-                _grid = null;
-                Status = "player has no navigation grid";
+                Status = "game navigation is unavailable";
                 return;
             }
 
-            _grid = playerGrid;
-            GridIndex start = _grid.GetUnclampedGridLocationFromPos(player.transform.position);
-            float walkingSurfaceY = GetWalkingSurfaceY(player);
-            // Some kitchens register counters and stations on local GridManager instances
-            // even though chefs can walk between them on one continuous floor. A grid ID
-            // mismatch therefore does not mean the target is physically unreachable.
-            // Reuse a registered index only when it belongs to the player's current grid;
-            // otherwise project the target's world position onto the walking grid.
-            GridIndex rawTargetIndex = registeredTargetLocation != null
-                && registeredTargetLocation.AccessGridManager == playerGrid
-                    ? registeredTargetLocation.GridIndex
-                    : _grid.GetUnclampedGridLocationFromPos(target.transform.position);
+            GridIndex start = _navGrid.GetGridLocationFromPos(player.transform.position);
+            GridIndex targetIndex = _navGrid.GetGridLocationFromPos(target.transform.position);
+            Point3 halfSize = _navGrid.GetGridHalfSize();
+            Point2 startPoint = _navSpace.GetNavPoint(player.transform.position);
 
-            // A stack on a worktop is often one grid level above the chef. This search only
-            // expands X/Z, so its goal must stay on the chef's current walking layer.
-            GridIndex targetIndex = new GridIndex(rawTargetIndex.X, start.Y, rawTargetIndex.Z);
-            Point3 halfSize = _grid.GetGridHalfSize();
+            List<Vector3> bestPath = null;
+            GridIndex bestGoal = default(GridIndex);
+            float bestTieDistance = float.PositiveInfinity;
 
-            List<GridIndex> goals = new List<GridIndex>();
             if (searchAllNeighbourCells)
             {
                 for (int x = -1; x <= 1; x++)
@@ -291,13 +225,15 @@ namespace Overcooked2DishwasherBot
                         {
                             continue;
                         }
-                        GridIndex goal = targetIndex + new GridIndex(x, 0, z);
-                        if (!_rejectedInteractionCells.Contains(goal)
-                            && Inside(goal, halfSize)
-                            && IsWalkable(goal, start, walkingSurfaceY))
-                        {
-                            goals.Add(goal);
-                        }
+                        ConsiderTargetGoal(
+                            start,
+                            startPoint,
+                            targetIndex + new GridIndex(x, 0, z),
+                            halfSize,
+                            player.transform.position,
+                            ref bestPath,
+                            ref bestGoal,
+                            ref bestTieDistance);
                     }
                 }
             }
@@ -305,260 +241,216 @@ namespace Overcooked2DishwasherBot
             {
                 for (int i = 0; i < FourWayOffsets.Length; i++)
                 {
-                    GridIndex goal = targetIndex + FourWayOffsets[i];
-                    if (Inside(goal, halfSize) && IsWalkable(goal, start, walkingSurfaceY))
-                    {
-                        goals.Add(goal);
-                    }
+                    ConsiderTargetGoal(
+                        start,
+                        startPoint,
+                        targetIndex + FourWayOffsets[i],
+                        halfSize,
+                        player.transform.position,
+                        ref bestPath,
+                        ref bestGoal,
+                        ref bestTieDistance);
                 }
             }
 
-            if (goals.Count == 0)
+            if (bestPath == null)
             {
-                Status = "target has no walkable adjacent cell on player layer Y=" + start.Y;
+                Status = "no reachable interaction cell in game navigation";
                 return;
             }
 
-            List<GridIndex> best = null;
-            GridIndex bestGoal = default(GridIndex);
-            for (int i = 0; i < goals.Count; i++)
-            {
-                List<GridIndex> path = FindPath(start, goals[i], halfSize, walkingSurfaceY);
-                if (path != null && (best == null || path.Count < best.Count))
-                {
-                    best = path;
-                    bestGoal = goals[i];
-                }
-            }
-
-            if (best == null)
-            {
-                Status = "path search failed on player layer Y=" + start.Y;
-                return;
-            }
-
-            _hasPath = true;
+            _worldPath.AddRange(bestPath);
+            _routeFound = true;
             _currentGoal = bestGoal;
             _hasCurrentGoal = true;
-            Status = "path built with " + best.Count + " waypoint(s) on player layer Y=" + start.Y;
+            ResetProgressTracking();
+            Status = "game route built with " + bestPath.Count + " waypoint(s)";
+        }
 
-            for (int i = 0; i < best.Count; i++)
+        private void ConsiderTargetGoal(
+            GridIndex start,
+            Point2 startPoint,
+            GridIndex goal,
+            Point3 halfSize,
+            Vector3 playerPosition,
+            ref List<Vector3> bestPath,
+            ref GridIndex bestGoal,
+            ref float bestTieDistance)
+        {
+            if (!Inside(goal, halfSize)
+                || _rejectedInteractionCells.Contains(goal)
+                || !IsNavigationCellOpen(goal, start))
             {
-                Vector3 point = _grid.GetPosFromGridLocation(best[i]);
-                RaycastHit hit;
-                if (TryFindGround(point, walkingSurfaceY, out hit))
-                {
-                    point.y = hit.point.y;
-                }
-                _worldPath.Add(point);
+                return;
+            }
+
+            Vector3 goalPosition = _navGrid.GetPosFromGridLocation(goal);
+            List<Vector3> candidate = FindGameRoute(start, startPoint, goal, goalPosition);
+            if (candidate == null)
+            {
+                return;
+            }
+
+            float tieDistance = Flatten(goalPosition - playerPosition).sqrMagnitude;
+            if (bestPath == null
+                || candidate.Count < bestPath.Count
+                || (candidate.Count == bestPath.Count && tieDistance < bestTieDistance))
+            {
+                bestPath = candidate;
+                bestGoal = goal;
+                bestTieDistance = tieDistance;
             }
         }
 
-        private void BuildAvoidancePath(
+        private List<Vector3> FindGameRoute(
+            GridIndex start,
+            Point2 startPoint,
+            GridIndex goal,
+            Vector3 goalPosition)
+        {
+            if (start == goal)
+            {
+                return new List<Vector3>();
+            }
+
+            try
+            {
+                List<Vector3> path = _navSpace.FindPath(startPoint, _navSpace.GetNavPoint(goalPosition));
+                return path != null && path.Count > 0 ? path : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private void BuildAvoidanceRoute(
             PlayerControls player,
             IList<Vector3> threatPositions,
             float safeDistance)
         {
-            _worldPath.Clear();
-            _pathCursor = 0;
-            _hasPath = false;
-            _hasCurrentGoal = false;
-
-            _grid = GameUtils.GetGridManager(player.transform);
-            if (_grid == null)
+            ClearRoute();
+            if (!EnsureGameNavigation())
             {
-                Status = "avoidance has no player grid";
+                Status = "game navigation is unavailable for avoidance";
                 return;
             }
 
             Vector3 playerPosition = player.transform.position;
-            float walkingSurfaceY = GetWalkingSurfaceY(player);
-            GridIndex start = _grid.GetUnclampedGridLocationFromPos(playerPosition);
-            Point3 halfSize = _grid.GetGridHalfSize();
+            GridIndex start = _navGrid.GetGridLocationFromPos(playerPosition);
+            Point2 startPoint = _navSpace.GetNavPoint(playerPosition);
+            Point3 halfSize = _navGrid.GetGridHalfSize();
             int maxDepth = Mathf.Clamp(Mathf.CeilToInt(safeDistance) + 2, 3, 6);
             float safeDistanceSquared = safeDistance * safeDistance;
-            Vector3 preferredDirection = CalculateRepulsion(playerPosition, threatPositions, player.transform.forward);
+            Vector3 preferred = CalculateRepulsion(playerPosition, threatPositions, player.transform.forward);
 
-            Queue<GridIndex> open = new Queue<GridIndex>();
-            Dictionary<GridIndex, GridIndex> parent = new Dictionary<GridIndex, GridIndex>(default(GridIndex));
-            Dictionary<GridIndex, int> depth = new Dictionary<GridIndex, int>(default(GridIndex));
-            HashSet<GridIndex> visited = new HashSet<GridIndex>(default(GridIndex));
-            open.Enqueue(start);
-            visited.Add(start);
-            depth.Add(start, 0);
-
-            bool foundSafe = false;
-            bool foundFallback = false;
-            GridIndex bestGoal = default(GridIndex);
-            int bestDepth = int.MaxValue;
+            List<Vector3> bestSafePath = null;
             float bestSafeScore = float.NegativeInfinity;
+            List<Vector3> bestFallbackPath = null;
             float bestFallbackScore = float.NegativeInfinity;
 
-            int safety = 0;
-            while (open.Count > 0 && safety++ < 10000)
+            for (int x = -maxDepth; x <= maxDepth; x++)
             {
-                GridIndex current = open.Dequeue();
-                int currentDepth = depth[current];
-                if (current != start)
+                for (int z = -maxDepth; z <= maxDepth; z++)
                 {
-                    Vector3 worldPosition = _grid.GetPosFromGridLocation(current);
-                    float minimumDistanceSquared = MinimumHorizontalSqrDistance(worldPosition, threatPositions);
-                    Vector3 fromPlayer = Flatten(worldPosition - playerPosition);
-                    float alignment = fromPlayer.sqrMagnitude > 0.001f
-                        ? Vector3.Dot(fromPlayer.normalized, preferredDirection)
-                        : -1f;
-
-                    if (minimumDistanceSquared >= safeDistanceSquared)
-                    {
-                        float safeScore = minimumDistanceSquared + alignment * 0.35f;
-                        if (!foundSafe
-                            || currentDepth < bestDepth
-                            || (currentDepth == bestDepth && safeScore > bestSafeScore))
-                        {
-                            foundSafe = true;
-                            bestGoal = current;
-                            bestDepth = currentDepth;
-                            bestSafeScore = safeScore;
-                        }
-                    }
-                    else if (!foundSafe)
-                    {
-                        float fallbackScore = minimumDistanceSquared + alignment * 0.25f - currentDepth * 0.08f;
-                        if (!foundFallback || fallbackScore > bestFallbackScore)
-                        {
-                            foundFallback = true;
-                            bestGoal = current;
-                            bestFallbackScore = fallbackScore;
-                        }
-                    }
-                }
-
-                if (currentDepth >= maxDepth || (foundSafe && currentDepth >= bestDepth))
-                {
-                    continue;
-                }
-
-                for (int i = 0; i < FourWayOffsets.Length; i++)
-                {
-                    GridIndex next = current + FourWayOffsets[i];
-                    if (!Inside(next, halfSize)
-                        || visited.Contains(next)
-                        || !IsWalkable(next, start, walkingSurfaceY))
+                    int manhattan = Mathf.Abs(x) + Mathf.Abs(z);
+                    if (manhattan == 0 || manhattan > maxDepth)
                     {
                         continue;
                     }
 
-                    visited.Add(next);
-                    parent.Add(next, current);
-                    depth.Add(next, currentDepth + 1);
-                    open.Enqueue(next);
+                    GridIndex goal = start + new GridIndex(x, 0, z);
+                    if (!Inside(goal, halfSize) || !IsNavigationCellOpen(goal, start))
+                    {
+                        continue;
+                    }
+
+                    Vector3 goalPosition = _navGrid.GetPosFromGridLocation(goal);
+                    List<Vector3> path = FindGameRoute(start, startPoint, goal, goalPosition);
+                    if (path == null)
+                    {
+                        continue;
+                    }
+
+                    float minimumDistanceSquared = MinimumHorizontalSqrDistance(goalPosition, threatPositions);
+                    Vector3 fromPlayer = Flatten(goalPosition - playerPosition);
+                    float alignment = fromPlayer.sqrMagnitude > 0.001f
+                        ? Vector3.Dot(fromPlayer.normalized, preferred)
+                        : -1f;
+                    if (minimumDistanceSquared >= safeDistanceSquared)
+                    {
+                        float score = minimumDistanceSquared + alignment * 0.35f - path.Count * 0.08f;
+                        if (bestSafePath == null
+                            || path.Count < bestSafePath.Count
+                            || (path.Count == bestSafePath.Count && score > bestSafeScore))
+                        {
+                            bestSafePath = path;
+                            bestSafeScore = score;
+                        }
+                    }
+                    else
+                    {
+                        float score = minimumDistanceSquared + alignment * 0.25f - path.Count * 0.08f;
+                        if (bestFallbackPath == null || score > bestFallbackScore)
+                        {
+                            bestFallbackPath = path;
+                            bestFallbackScore = score;
+                        }
+                    }
                 }
             }
 
-            if (!foundSafe && !foundFallback)
+            List<Vector3> selected = bestSafePath ?? bestFallbackPath;
+            if (selected == null)
             {
-                Status = "avoidance found no reachable cell";
+                Status = "game navigation found no avoidance route";
                 return;
             }
 
-            List<GridIndex> path = new List<GridIndex>();
-            GridIndex cursor = bestGoal;
-            while (cursor != start)
-            {
-                path.Add(cursor);
-                cursor = parent[cursor];
-            }
-            path.Reverse();
-
-            for (int i = 0; i < path.Count; i++)
-            {
-                Vector3 point = _grid.GetPosFromGridLocation(path[i]);
-                RaycastHit hit;
-                if (TryFindGround(point, walkingSurfaceY, out hit))
-                {
-                    point.y = hit.point.y;
-                }
-                _worldPath.Add(point);
-            }
-
-            _hasPath = _worldPath.Count > 0;
-            Status = foundSafe
-                ? "avoidance path built to a safe cell"
-                : "avoidance path built toward the safest reachable cell";
+            _worldPath.AddRange(selected);
+            _routeFound = true;
+            ResetProgressTracking();
+            Status = bestSafePath != null
+                ? "game route built to a safe avoidance cell"
+                : "game route built toward the safest reachable cell";
         }
 
-        private static StaticGridLocation FindRegisteredGridLocation(GameObject target)
+        private bool EnsureGameNavigation()
         {
-            // Only an exact registration describes this target. In particular, an
-            // AttachStation's child attach point may intentionally sit one cell away
-            // from the station root (for example, a lower-facing plate return).
-            return target.GetComponent<StaticGridLocation>();
-        }
-
-        private List<GridIndex> FindPath(GridIndex start, GridIndex goal, Point3 halfSize, float walkingSurfaceY)
-        {
-            Queue<GridIndex> open = new Queue<GridIndex>();
-            Dictionary<GridIndex, GridIndex> parent = new Dictionary<GridIndex, GridIndex>(default(GridIndex));
-            HashSet<GridIndex> visited = new HashSet<GridIndex>(default(GridIndex));
-            open.Enqueue(start);
-            visited.Add(start);
-
-            int safety = 0;
-            while (open.Count > 0 && safety++ < 10000)
+            try
             {
-                GridIndex current = open.Dequeue();
-                if (current == goal)
+                GridNavSpace navSpace = GameUtils.GetGridNavSpace();
+                GridManager navGrid = navSpace == null ? null : GameUtils.GetGridManager(navSpace.transform);
+                if (navSpace == null || navGrid == null)
                 {
-                    List<GridIndex> result = new List<GridIndex>();
-                    while (current != start)
-                    {
-                        result.Add(current);
-                        current = parent[current];
-                    }
-                    result.Reverse();
-                    return result;
+                    return false;
                 }
 
-                for (int i = 0; i < FourWayOffsets.Length; i++)
+                if (_navSpace != navSpace || _navGrid != navGrid)
                 {
-                    GridIndex next = current + FourWayOffsets[i];
-                    if (!Inside(next, halfSize) || visited.Contains(next))
-                    {
-                        continue;
-                    }
-                    if (next != goal && !IsWalkable(next, start, walkingSurfaceY))
-                    {
-                        continue;
-                    }
-                    if (_blockedPathEdges.Contains(new GridEdge(current, next)))
-                    {
-                        continue;
-                    }
-
-                    visited.Add(next);
-                    parent.Add(next, current);
-                    open.Enqueue(next);
+                    _navSpace = navSpace;
+                    _navGrid = navGrid;
+                    _worldPath.Clear();
+                    _pathCursor = 0;
                 }
+                return true;
             }
-
-            return null;
+            catch
+            {
+                _navSpace = null;
+                _navGrid = null;
+                return false;
+            }
         }
 
-        private bool IsWalkable(GridIndex index, GridIndex start, float walkingSurfaceY)
+        private bool IsNavigationCellOpen(GridIndex index, GridIndex start)
         {
             if (index == start)
             {
                 return true;
             }
-
-            GameObject occupant = _grid.GetGridOccupant(index);
-            if (occupant != null && !IsWalkableOccupant(occupant))
-            {
-                return false;
-            }
-
-            RaycastHit hit;
-            return TryFindGround(_grid.GetPosFromGridLocation(index), walkingSurfaceY, out hit);
+            GameObject occupant = _navGrid.GetGridOccupant(index);
+            return occupant == null || IsWalkableOccupant(occupant);
         }
 
         private static bool IsWalkableOccupant(GameObject occupant)
@@ -566,162 +458,98 @@ namespace Overcooked2DishwasherBot
             return occupant.CompareTag("Travelator") || occupant.CompareTag("MovingPlatform");
         }
 
-        private bool RejectPhysicallyBlockedPathEdge(PlayerControls player, Vector3 desired)
+        private void AdvancePastReachedWaypoints(Vector3 playerPosition)
         {
-            if (_grid == null
-                || _pathCursor < 0
-                || _pathCursor >= _worldPath.Count
-                || (HasGroundAhead(player, null, desired)
-                    && !HasStaticBlockingCollider(player, null, desired)))
+            while (_pathCursor < _worldPath.Count
+                && Flatten(_worldPath[_pathCursor] - playerPosition).sqrMagnitude < 0.3f * 0.3f)
             {
+                _pathCursor++;
+                ResetProgressTracking();
+            }
+        }
+
+        private bool TrackProgressAndNeedsRepath(float distance)
+        {
+            if (float.IsPositiveInfinity(_lastWaypointDistance)
+                || distance < _lastWaypointDistance - 0.025f)
+            {
+                _lastWaypointDistance = distance;
+                _lastProgressTime = Time.time;
                 return false;
             }
 
-            GridIndex from = _grid.GetUnclampedGridLocationFromPos(player.transform.position);
-            GridIndex to = _grid.GetUnclampedGridLocationFromPos(_worldPath[_pathCursor]);
-            if (from == to)
+            if (distance < _lastWaypointDistance)
             {
-                return false;
+                _lastWaypointDistance = distance;
             }
+            return Time.time - _lastProgressTime >= 1.1f;
+        }
 
-            _blockedPathEdges.Add(new GridEdge(from, to));
-            _blockedPathEdges.Add(new GridEdge(to, from));
+        private void ResetProgressTracking()
+        {
+            _lastWaypointDistance = float.PositiveInfinity;
+            _lastProgressTime = Time.time;
+        }
+
+        private void ClearRoute()
+        {
             _worldPath.Clear();
             _pathCursor = 0;
-            _hasPath = false;
+            _routeFound = false;
             _hasCurrentGoal = false;
-            _nextRepathTime = 0f;
-            _avoidDirection = Vector3.zero;
-            _avoidUntil = 0f;
-            Status = "physical obstacle rejected current path edge";
-            return true;
+            ResetProgressTracking();
         }
 
-        private static bool Inside(GridIndex index, Point3 halfSize)
+        private Vector3 FaceInteractionTarget(PlayerControls player, Vector3 direct)
         {
-            return index.X >= -halfSize.X && index.X <= halfSize.X
-                && index.Z >= -halfSize.Z && index.Z <= halfSize.Z;
-        }
-
-        private static bool TryFindGround(Vector3 point, float walkingSurfaceY, out RaycastHit accepted)
-        {
-            RaycastHit[] hits = Physics.RaycastAll(
-                point + Vector3.up * 1.75f,
-                Vector3.down,
-                3.5f,
-                -1,
-                QueryTriggerInteraction.Ignore);
-
-            bool found = false;
-            float bestHeightDifference = float.PositiveInfinity;
-            accepted = default(RaycastHit);
-            for (int i = 0; i < hits.Length; i++)
+            Vector3 desired = direct.sqrMagnitude > 0.01f
+                ? direct.normalized
+                : Flatten(player.transform.forward).normalized;
+            Vector3 forward = Flatten(player.transform.forward).normalized;
+            if (desired.sqrMagnitude < 0.001f || Vector3.Dot(forward, desired) >= 0.94f)
             {
-                RaycastHit hit = hits[i];
-                float heightDifference = Mathf.Abs(hit.point.y - walkingSurfaceY);
-                if (hit.collider != null
-                    && hit.normal.y > 0.45f
-                    && heightDifference <= MaximumWalkableHeightDifference
-                    && heightDifference < bestHeightDifference)
-                {
-                    accepted = hit;
-                    bestHeightDifference = heightDifference;
-                    found = true;
-                }
-            }
-            return found;
-        }
-
-        private Vector3 SafeDirection(PlayerControls player, GameObject target, Vector3 desired)
-        {
-            if (desired.sqrMagnitude < 0.001f)
-            {
+                Status = "at interaction cell and facing target";
+                _facingStartedTime = 0f;
                 return Vector3.zero;
             }
 
-            desired = desired.normalized;
-            if (Time.time < _avoidUntil
-                && _avoidDirection.sqrMagnitude > 0.001f
-                && HasGroundAhead(player, target, _avoidDirection)
-                && !HasBlockingCollider(player, target, _avoidDirection))
+            if (_facingStartedTime <= 0f)
             {
-                Status += "; holding avoidance direction";
-                return _avoidDirection;
+                _facingStartedTime = Time.time;
             }
-
-            if (HasGroundAhead(player, target, desired)
-                && !HasBlockingCollider(player, target, desired))
+            if (Time.time - _facingStartedTime <= 0.22f)
             {
+                // The game's movement implementation rotates from the normal input axis.
+                // A short bounded input burst synchronises facing on host and clients while
+                // preventing the old unlimited straight-line push into a counter.
+                Status = "turning toward interaction target";
                 return desired;
             }
 
-            Vector3 left = Quaternion.Euler(0f, -55f, 0f) * desired;
-            Vector3 right = Quaternion.Euler(0f, 55f, 0f) * desired;
-            bool leftClear = HasGroundAhead(player, target, left)
-                && !HasBlockingCollider(player, target, left);
-            bool rightClear = HasGroundAhead(player, target, right)
-                && !HasBlockingCollider(player, target, right);
-            Vector3 avoidance = Vector3.zero;
-            if (leftClear && rightClear)
-            {
-                Vector3 targetDirection = target == null
-                    ? desired
-                    : Flatten(target.transform.position - player.transform.position).normalized;
-                avoidance = Vector3.Dot(left, targetDirection) >= Vector3.Dot(right, targetDirection) ? left : right;
-            }
-            else if (leftClear)
-            {
-                avoidance = left;
-            }
-            else if (rightClear)
-            {
-                avoidance = right;
-            }
-
-            if (avoidance.sqrMagnitude > 0.001f)
-            {
-                _avoidDirection = avoidance.normalized;
-                _avoidUntil = Time.time + 0.4f;
-                Status += "; avoidance locked for 0.4s";
-                return _avoidDirection;
-            }
-
-            Status += "; waiting for safe ground/dynamic obstacle";
+            Status = "interaction facing burst complete";
             return Vector3.zero;
         }
 
-        private Vector3 FinalApproachDirection(PlayerControls player, GameObject target, Vector3 desired)
+        private static Vector3 SafeMovementDirection(PlayerControls player, Vector3 desired)
         {
+            desired = Flatten(desired);
             if (desired.sqrMagnitude < 0.001f)
             {
                 return Vector3.zero;
             }
             desired.Normalize();
-            if (HasGroundAhead(player, target, desired)
-                && !HasBlockingCollider(player, target, desired))
-            {
-                return desired;
-            }
-
-            // At an interaction goal, local left/right steering can undo the BFS route
-            // and repeatedly drive back into an unrelated table. Stop here so the caller
-            // can reject this interaction cell and request a different reachable side.
-            Status += "; final approach blocked";
-            return Vector3.zero;
+            return HasOtherChefAhead(player, desired) ? Vector3.zero : desired;
         }
 
-        private static bool HasGroundAhead(PlayerControls player, GameObject target, Vector3 direction)
+        private static bool HasOtherChefAhead(PlayerControls player, Vector3 direction)
         {
-            Vector3 position = player.transform.position;
-            float walkingSurfaceY = GetWalkingSurfaceY(player);
-            Vector3 probe = position + direction * 0.55f + Vector3.up * 0.9f;
-            RaycastHit[] hits = Physics.RaycastAll(
-                probe,
-                Vector3.down,
-                2.1f,
+            RaycastHit[] hits = Physics.SphereCastAll(
+                player.transform.position + Vector3.up * 0.45f,
+                0.17f,
+                direction,
+                0.42f,
                 -1,
                 QueryTriggerInteraction.Ignore);
-
             for (int i = 0; i < hits.Length; i++)
             {
                 Collider collider = hits[i].collider;
@@ -729,17 +557,19 @@ namespace Overcooked2DishwasherBot
                 {
                     continue;
                 }
-                if (target != null && IsRelatedTo(collider.transform, target.transform))
-                {
-                    continue;
-                }
-                if (hits[i].normal.y > 0.4f
-                    && Mathf.Abs(hits[i].point.y - walkingSurfaceY) <= MaximumWalkableHeightDifference)
+                PlayerControls otherPlayer = collider.GetComponentInParent<PlayerControls>();
+                if (otherPlayer != null && otherPlayer != player)
                 {
                     return true;
                 }
             }
             return false;
+        }
+
+        private static bool Inside(GridIndex index, Point3 halfSize)
+        {
+            return index.X >= -halfSize.X && index.X <= halfSize.X
+                && index.Z >= -halfSize.Z && index.Z <= halfSize.Z;
         }
 
         private static Vector3 CalculateRepulsion(
@@ -757,7 +587,6 @@ namespace Overcooked2DishwasherBot
                     result += away.normalized / Mathf.Max(0.25f, Mathf.Sqrt(sqrDistance));
                 }
             }
-
             result = Flatten(result);
             if (result.sqrMagnitude < 0.001f)
             {
@@ -771,137 +600,13 @@ namespace Overcooked2DishwasherBot
             float minimum = float.PositiveInfinity;
             for (int i = 0; i < positions.Count; i++)
             {
-                Vector3 delta = Flatten(point - positions[i]);
-                if (delta.sqrMagnitude < minimum)
+                float distance = Flatten(point - positions[i]).sqrMagnitude;
+                if (distance < minimum)
                 {
-                    minimum = delta.sqrMagnitude;
+                    minimum = distance;
                 }
             }
             return minimum;
-        }
-
-        private static bool HasBlockingCollider(PlayerControls player, GameObject target, Vector3 direction)
-        {
-            RaycastHit[] hits = Physics.SphereCastAll(
-                player.transform.position + Vector3.up * 0.45f,
-                0.2f,
-                direction,
-                0.55f,
-                -1,
-                QueryTriggerInteraction.Ignore);
-
-            for (int i = 0; i < hits.Length; i++)
-            {
-                Collider collider = hits[i].collider;
-                if (collider == null)
-                {
-                    continue;
-                }
-                Transform hitTransform = collider.transform;
-                if (IsPartOf(hitTransform, player.gameObject))
-                {
-                    continue;
-                }
-                if (target != null && IsRelatedTo(hitTransform, target.transform))
-                {
-                    continue;
-                }
-
-                ClientPlayerAttachmentCarrier carrier = player.GetComponent<ClientPlayerAttachmentCarrier>();
-                GameObject carried = carrier == null ? null : carrier.InspectCarriedItem();
-                if (carried != null && IsPartOf(hitTransform, carried))
-                {
-                    continue;
-                }
-
-                PlayerControls otherPlayer = collider.GetComponentInParent<PlayerControls>();
-                if (otherPlayer != null && otherPlayer != player)
-                {
-                    return true;
-                }
-
-                Rigidbody body = collider.attachedRigidbody;
-                if (body != null && !body.isKinematic && body.gameObject != player.gameObject)
-                {
-                    return true;
-                }
-
-
-                GroundCast groundCast = player.GetComponent<GroundCast>();
-                if (groundCast != null && collider == groundCast.GetGroundCollider())
-                {
-                    continue;
-                }
-                if (collider.CompareTag("Travelator") || collider.CompareTag("MovingPlatform"))
-                {
-                    continue;
-                }
-
-                // The cast runs through the chef's body rather than along the floor, so
-                // any remaining static/kinematic collider is a wall, counter, or prop.
-                return true;
-            }
-            return false;
-        }
-
-        private static bool HasStaticBlockingCollider(PlayerControls player, GameObject target, Vector3 direction)
-        {
-            RaycastHit[] hits = Physics.SphereCastAll(
-                player.transform.position + Vector3.up * 0.45f,
-                0.2f,
-                direction,
-                0.55f,
-                -1,
-                QueryTriggerInteraction.Ignore);
-            GroundCast groundCast = player.GetComponent<GroundCast>();
-            ClientPlayerAttachmentCarrier carrier = player.GetComponent<ClientPlayerAttachmentCarrier>();
-            GameObject carried = carrier == null ? null : carrier.InspectCarriedItem();
-
-            for (int i = 0; i < hits.Length; i++)
-            {
-                Collider collider = hits[i].collider;
-                if (collider == null || IsPartOf(collider.transform, player.gameObject))
-                {
-                    continue;
-                }
-                if (target != null && IsRelatedTo(collider.transform, target.transform))
-                {
-                    continue;
-                }
-                if (carried != null && IsPartOf(collider.transform, carried))
-                {
-                    continue;
-                }
-                if (collider.GetComponentInParent<PlayerControls>() != null)
-                {
-                    continue;
-                }
-                Rigidbody body = collider.attachedRigidbody;
-                if (body != null && !body.isKinematic)
-                {
-                    continue;
-                }
-                if (groundCast != null && collider == groundCast.GetGroundCollider())
-                {
-                    continue;
-                }
-                if (collider.CompareTag("Travelator") || collider.CompareTag("MovingPlatform"))
-                {
-                    continue;
-                }
-                return true;
-            }
-            return false;
-        }
-
-        private static float GetWalkingSurfaceY(PlayerControls player)
-        {
-            GroundCast groundCast = player == null ? null : player.GetComponent<GroundCast>();
-            if (groundCast != null && groundCast.HasGroundContact())
-            {
-                return groundCast.GetGroundPoint().y;
-            }
-            return player == null ? 0f : player.transform.position.y;
         }
 
         private static bool IsPartOf(Transform candidate, GameObject root)
@@ -909,45 +614,10 @@ namespace Overcooked2DishwasherBot
             return candidate == root.transform || candidate.IsChildOf(root.transform);
         }
 
-        private static bool IsRelatedTo(Transform left, Transform right)
-        {
-            return left == right || left.IsChildOf(right) || right.IsChildOf(left);
-        }
-
         private static Vector3 Flatten(Vector3 value)
         {
             value.y = 0f;
             return value;
-        }
-
-        private struct GridEdge : IEquatable<GridEdge>
-        {
-            internal readonly GridIndex From;
-            internal readonly GridIndex To;
-
-            internal GridEdge(GridIndex from, GridIndex to)
-            {
-                From = from;
-                To = to;
-            }
-
-            public bool Equals(GridEdge other)
-            {
-                return From == other.From && To == other.To;
-            }
-
-            public override bool Equals(object obj)
-            {
-                return obj is GridEdge && Equals((GridEdge)obj);
-            }
-
-            public override int GetHashCode()
-            {
-                unchecked
-                {
-                    return (From.GetHashCode() * 397) ^ To.GetHashCode();
-                }
-            }
         }
     }
 }

@@ -29,3 +29,5 @@ These names and signatures were taken from the locally installed `Overcooked2_Da
 - `GroundCast.GetGroundPoint()` exposes the chef's current physical walking-surface height; navigation uses this instead of the transform pivot when rejecting counter tops as floor.
 - Grid occupancy is not sufficient on every map: when the chef physically encounters unregistered fixed scenery, the obstructed edge is excluded from the current BFS route and replanned.
 - `GameUtils.GetGridManager(Transform)` may return a local manager from the object's parent hierarchy while the chef walks on the global floor manager. Different manager instances are not sufficient evidence that two world positions are disconnected.
+- `GridNavSpace.GetNavPoint(Vector3)` maps world positions onto the game's global navigation map, and `GridNavSpace.FindPath(Point2, Point2)` returns the corresponding static kitchen route used by `GridNavigator`.
+- `ClientPlayerControlsImpl_Default.Update_Rotation()` rotates the chef from the normal movement axes before applying movement. A short bounded input burst can therefore synchronise final interaction facing without directly mutating the transform.
