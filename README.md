@@ -2,7 +2,14 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.2.0**.
+Current version: **1.2.1**.
+
+### 1.2.1 static-obstacle pathfinding fix
+
+- Uses the chef's actual `GroundCast` contact height as the walking surface and rejects counter tops that the previous `1.1`-unit height tolerance could mistake for floor.
+- Validates every BFS edge with a horizontal physics sweep, so unregistered tables, walls, and fixed props cannot be crossed just because both grid-cell centres have ground beneath them.
+- Static collision checks now apply while following ordinary waypoints; the eventual target is exempted only during the final interaction-facing step.
+- When the final approach is blocked by an unrelated object, the bot stops and rejects that interaction cell instead of abandoning the route and steering straight into the obstruction.
 
 ### 1.2.0 optional automatic serving
 

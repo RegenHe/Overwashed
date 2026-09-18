@@ -26,3 +26,5 @@ These names and signatures were taken from the locally installed `Overcooked2_Da
 - Server order validation first requires `OrderDefinitionNode.m_platingStep` to match the plate and then calls `AssembledDefinitionNode.Matching`; wildcard recipes reverse the normal matching argument order.
 - `ClientPlateStation` is the client serving handler and its `PlateStation.m_teamId` identifies the station belonging to the keyboard chef's team.
 - `ClientPlacementContainer.CanHandlePlacement(...)` performs symmetric combination, allowing an empty carried plate to collect a matching completed meal through the normal placement input.
+- `GroundCast.GetGroundPoint()` exposes the chef's current physical walking-surface height; navigation uses this instead of the transform pivot when rejecting counter tops as floor.
+- Grid occupancy is not sufficient on every map: fixed scenery can physically block the segment between two nominal grid cells, so BFS edges are also validated with a horizontal physics sweep.
