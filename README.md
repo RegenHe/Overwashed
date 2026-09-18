@@ -2,7 +2,14 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.3.1**.
+Current version: **1.3.2**.
+
+### 1.3.2 movement and interaction speed
+
+- Brakes only to a safe turning speed at sharp grid corners instead of waiting until the chef is almost stationary.
+- Replaces the single-frame target-facing cycle with a bounded `0.12`-second continuous input pulse, greatly reducing the pause before pickup, placement, and washing.
+- Uses the game's normal dash input only when at least three grid tiles of the current route are straight and a forward collision sweep is clear. Dashing is disabled near turns, targets, and avoidance routes.
+- Reduces failed pickup/placement action retry cooldown from `0.65` to `0.35` seconds without changing the initial action timing.
 
 ### 1.3.1 route-following stability fix
 

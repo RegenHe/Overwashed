@@ -33,3 +33,4 @@ These names and signatures were taken from the locally installed `Overcooked2_Da
 - `ClientPlayerControlsImpl_Default.Update_Rotation()` rotates the chef from the normal movement axes before applying movement. A short bounded input burst can therefore synchronise final interaction facing without directly mutating the transform.
 - `PlayerControlsHelper.GetControlAxis(...)` normalises every non-zero movement vector, so reducing analogue magnitude does not slow the chef; route corners must use zero-input braking frames instead.
 - `PlayerControls.Motion.GetVelocityXZ()` exposes the current horizontal speed used to wait for that braking to finish before a 90-degree turn or final-facing pulse.
+- `ClientPlayerControlsImpl_Default.Update_Movement()` handles `m_dashButton.JustPressed()` through the normal dash cooldown and movement code, so the Mod can safely request a dash through its existing local/network logical-input binding without changing movement speed fields.

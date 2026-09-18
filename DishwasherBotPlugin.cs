@@ -14,7 +14,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overcooked 2 Dishwasher Bot";
-        public const string PluginVersion = "1.3.1";
+        public const string PluginVersion = "1.3.2";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -44,6 +44,8 @@ namespace Overcooked2DishwasherBot
         private ServePhase _servePhase;
         private BotState _state = BotState.Disabled;
         private float _pickupDownUntil;
+        private float _dashDownUntil;
+        private float _nextDashTime;
         private float _placementPendingUntil;
         private float _nextActionTime;
         private float _nextAcquireTime;
@@ -144,6 +146,7 @@ namespace Overcooked2DishwasherBot
                 }
 
                 UpdatePickupPulse();
+                UpdateDashPulse();
                 TickBot();
             }
             catch (Exception exception)
@@ -354,6 +357,8 @@ namespace Overcooked2DishwasherBot
             _dirtyTarget = null;
             _sinkTarget = null;
             _pickupDownUntil = 0f;
+            _dashDownUntil = 0f;
+            _nextDashTime = 0f;
             _placementPendingUntil = 0f;
             _nextActionTime = 0f;
             _nextDirtyScanTime = 0f;
@@ -1371,7 +1376,7 @@ namespace Overcooked2DishwasherBot
                 return;
             }
             _pickupDownUntil = Time.time + 0.12f;
-            _nextActionTime = Time.time + 0.65f;
+            _nextActionTime = Time.time + 0.35f;
             _input.SetPickup(true);
         }
 
@@ -1380,6 +1385,14 @@ namespace Overcooked2DishwasherBot
             if (_input != null)
             {
                 _input.SetPickup(Time.time < _pickupDownUntil);
+            }
+        }
+
+        private void UpdateDashPulse()
+        {
+            if (_input != null)
+            {
+                _input.SetDash(Time.time < _dashDownUntil);
             }
         }
 
@@ -1395,6 +1408,15 @@ namespace Overcooked2DishwasherBot
                 worldDirection.Normalize();
             }
             _input.SetWorldDirection(new Vector3Like(worldDirection.x, worldDirection.z), _player.Movement);
+
+            if (worldDirection.sqrMagnitude > 0.01f
+                && _navigator.CanDash
+                && Time.time >= _nextDashTime)
+            {
+                _dashDownUntil = Time.time + 0.08f;
+                _nextDashTime = Time.time + 0.85f;
+                _input.SetDash(true);
+            }
         }
 
         private void Wait()
@@ -1415,6 +1437,8 @@ namespace Overcooked2DishwasherBot
         private void ReleaseRobotInputs(bool restoreOriginals)
         {
             _pickupDownUntil = 0f;
+            _dashDownUntil = 0f;
+            _nextDashTime = 0f;
             if (_input != null)
             {
                 _input.ReleaseAll();

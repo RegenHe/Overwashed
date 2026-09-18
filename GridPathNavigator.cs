@@ -35,8 +35,11 @@ namespace Overcooked2DishwasherBot
         private int _brakingPathCursor = -1;
         private Vector3 _plannedTargetPosition;
         private Vector3 _pathStartPoint;
+        private GameObject _facingTarget;
+        private float _facingBurstUntil;
 
         internal string Status { get; private set; }
+        internal bool CanDash { get; private set; }
 
         internal void Clear()
         {
@@ -57,6 +60,9 @@ namespace Overcooked2DishwasherBot
             _brakingPathCursor = -1;
             _plannedTargetPosition = Vector3.zero;
             _pathStartPoint = Vector3.zero;
+            _facingTarget = null;
+            _facingBurstUntil = 0f;
+            CanDash = false;
             Status = "cleared";
         }
 
@@ -72,6 +78,7 @@ namespace Overcooked2DishwasherBot
             out bool atInteractionCell)
         {
             atInteractionCell = false;
+            CanDash = false;
             if (player == null || target == null)
             {
                 return Vector3.zero;
@@ -114,6 +121,8 @@ namespace Overcooked2DishwasherBot
                 _hasCurrentGoal = false;
                 _searchAllNeighbourCells = searchAllNeighbourCells;
                 _brakingPathCursor = -1;
+                _facingTarget = null;
+                _facingBurstUntil = 0f;
             }
             bool stuck = Time.time - _stuckSince > 1.25f;
             if (targetChanged || targetMoved || Time.time >= _nextRepathTime || stuck)
@@ -159,6 +168,7 @@ namespace Overcooked2DishwasherBot
             {
                 return Vector3.zero;
             }
+            CanDash = HasSafeDashRun(player, toWaypoint.normalized);
             return SafeRouteDirection(player, toWaypoint.normalized);
         }
 
@@ -169,6 +179,7 @@ namespace Overcooked2DishwasherBot
             out bool hasEscapePath)
         {
             hasEscapePath = false;
+            CanDash = false;
             if (player == null || threatPositions == null || threatPositions.Count == 0)
             {
                 return Vector3.zero;
@@ -250,6 +261,8 @@ namespace Overcooked2DishwasherBot
             _avoidDirection = Vector3.zero;
             _avoidUntil = 0f;
             _brakingPathCursor = -1;
+            _facingTarget = null;
+            _facingBurstUntil = 0f;
             Status = "interaction cell rejected";
             return true;
         }
@@ -524,21 +537,21 @@ namespace Overcooked2DishwasherBot
 
                 if (_brakingPathCursor == _pathCursor)
                 {
-                    if (HorizontalSpeed(player) > 0.3f)
+                    if (HorizontalSpeed(player) > 0.85f)
                     {
                         Status = "braking before route turn";
                         return true;
                     }
 
                     _brakingPathCursor = -1;
-                    if (distance <= 0.48f)
+                    if (distance <= 0.45f)
                     {
                         _pathCursor++;
                         continue;
                     }
                 }
 
-                if (mustStop && distance <= 0.44f && HorizontalSpeed(player) > 0.45f)
+                if (mustStop && distance <= 0.38f && HorizontalSpeed(player) > 1.15f)
                 {
                     _brakingPathCursor = _pathCursor;
                     Status = _pathCursor == _worldPath.Count - 1
@@ -547,7 +560,7 @@ namespace Overcooked2DishwasherBot
                     return true;
                 }
 
-                float reachedDistance = mustStop ? 0.22f : 0.38f;
+                float reachedDistance = mustStop ? 0.24f : 0.38f;
                 if (distance >= reachedDistance)
                 {
                     return false;
@@ -584,6 +597,46 @@ namespace Overcooked2DishwasherBot
             return player == null || player.Motion == null
                 ? 0f
                 : player.Motion.GetVelocityXZ().magnitude;
+        }
+
+        private bool HasSafeDashRun(PlayerControls player, Vector3 desired)
+        {
+            if (_pathCursor < 0 || _pathCursor >= _worldPath.Count)
+            {
+                return false;
+            }
+
+            desired = Flatten(desired);
+            if (desired.sqrMagnitude < 0.001f)
+            {
+                return false;
+            }
+            desired.Normalize();
+
+            Vector3 forward = Flatten(player.transform.forward);
+            if (forward.sqrMagnitude < 0.001f
+                || Vector3.Dot(forward.normalized, desired) < 0.96f)
+            {
+                return false;
+            }
+
+            float straightDistance = Flatten(
+                _worldPath[_pathCursor] - player.transform.position).magnitude;
+            Vector3 previous = _worldPath[_pathCursor];
+            for (int i = _pathCursor + 1; i < _worldPath.Count; i++)
+            {
+                Vector3 segment = Flatten(_worldPath[i] - previous);
+                if (segment.sqrMagnitude < 0.001f
+                    || Vector3.Dot(segment.normalized, desired) < 0.97f)
+                {
+                    break;
+                }
+                straightDistance += segment.magnitude;
+                previous = _worldPath[i];
+            }
+
+            return straightDistance >= 3.0f
+                && !HasBlockingCollider(player, null, desired, 1.25f);
         }
 
         private static StaticGridLocation FindRegisteredGridLocation(GameObject target)
@@ -819,17 +872,21 @@ namespace Overcooked2DishwasherBot
             }
             desired.Normalize();
 
+            if (_facingTarget != target)
+            {
+                _facingTarget = target;
+                _facingBurstUntil = 0f;
+            }
+
             Vector3 forward = Flatten(player.transform.forward);
             if (forward.sqrMagnitude > 0.001f
-                && Vector3.Dot(forward.normalized, desired) >= 0.985f)
+                && Vector3.Dot(forward.normalized, desired) >= 0.98f)
             {
+                _facingBurstUntil = 0f;
                 return Vector3.zero;
             }
 
-            // Movement input is normalised by PlayerControlsHelper, so even a small
-            // analogue value drives at full speed. Alternate a short turning pulse with
-            // braking frames instead of continuously pushing into the worktop.
-            if (HorizontalSpeed(player) > 0.3f)
+            if (Time.time >= _facingBurstUntil && HorizontalSpeed(player) > 0.8f)
             {
                 Status += "; braking while facing target";
                 return Vector3.zero;
@@ -837,6 +894,13 @@ namespace Overcooked2DishwasherBot
             if (HasGroundAhead(player, target, desired)
                 && !HasBlockingCollider(player, target, desired))
             {
+                if (Time.time >= _facingBurstUntil)
+                {
+                    // A bounded continuous pulse turns much faster than the previous
+                    // single-frame pulse/full-stop cycle, while still limiting how far
+                    // the normal movement input can push into the worktop.
+                    _facingBurstUntil = Time.time + 0.12f;
+                }
                 return desired;
             }
 
@@ -919,11 +983,20 @@ namespace Overcooked2DishwasherBot
 
         private static bool HasBlockingCollider(PlayerControls player, GameObject target, Vector3 direction)
         {
+            return HasBlockingCollider(player, target, direction, 0.55f);
+        }
+
+        private static bool HasBlockingCollider(
+            PlayerControls player,
+            GameObject target,
+            Vector3 direction,
+            float distance)
+        {
             RaycastHit[] hits = Physics.SphereCastAll(
                 player.transform.position + Vector3.up * 0.45f,
                 0.2f,
                 direction,
-                0.55f,
+                distance,
                 -1,
                 QueryTriggerInteraction.Ignore);
 

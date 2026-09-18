@@ -254,6 +254,11 @@ namespace Overcooked2DishwasherBot
             _use.Down = down;
         }
 
+        internal void SetDash(bool down)
+        {
+            _dash.Down = down;
+        }
+
         internal void ReleaseAll()
         {
             _moveX.Value = 0f;
