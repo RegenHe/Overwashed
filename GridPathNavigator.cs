@@ -35,6 +35,7 @@ namespace Overcooked2DishwasherBot
         private int _brakingPathCursor = -1;
         private Vector3 _plannedTargetPosition;
         private Vector3 _pathStartPoint;
+        private Vector3 _interactionFacingDirection;
         private GameObject _facingTarget;
         private float _facingBurstUntil;
 
@@ -60,6 +61,7 @@ namespace Overcooked2DishwasherBot
             _brakingPathCursor = -1;
             _plannedTargetPosition = Vector3.zero;
             _pathStartPoint = Vector3.zero;
+            _interactionFacingDirection = Vector3.zero;
             _facingTarget = null;
             _facingBurstUntil = 0f;
             CanDash = false;
@@ -88,16 +90,6 @@ namespace Overcooked2DishwasherBot
             Vector3 targetPosition = target.transform.position;
             Vector3 direct = Flatten(targetPosition - playerPosition);
 
-            if (!searchAllNeighbourCells && direct.sqrMagnitude < 0.65f * 0.65f)
-            {
-                atInteractionCell = true;
-                Status = "inside interaction distance";
-                return FinalApproachDirection(
-                    player,
-                    target,
-                    direct.sqrMagnitude > 0.01f ? direct.normalized : player.transform.forward);
-            }
-
             bool moved = Flatten(playerPosition - _lastPlayerPosition).sqrMagnitude > 0.015f * 0.015f;
             if (moved)
             {
@@ -121,6 +113,7 @@ namespace Overcooked2DishwasherBot
                 _hasCurrentGoal = false;
                 _searchAllNeighbourCells = searchAllNeighbourCells;
                 _brakingPathCursor = -1;
+                _interactionFacingDirection = Vector3.zero;
                 _facingTarget = null;
                 _facingBurstUntil = 0f;
             }
@@ -150,7 +143,7 @@ namespace Overcooked2DishwasherBot
                 }
                 atInteractionCell = true;
                 Status = "at interaction cell";
-                return FinalApproachDirection(player, target, direct.normalized);
+                return FinalApproachDirection(player, target, GetFacingDirection(direct));
             }
 
             Vector3 toWaypoint = Flatten(_worldPath[_pathCursor] - playerPosition);
@@ -158,7 +151,7 @@ namespace Overcooked2DishwasherBot
             {
                 atInteractionCell = true;
                 Status = "approaching target from final cell";
-                return FinalApproachDirection(player, target, direct.normalized);
+                return FinalApproachDirection(player, target, GetFacingDirection(direct));
             }
 
             Status = "following waypoint " + (_pathCursor + 1) + "/" + _worldPath.Count;
@@ -261,6 +254,7 @@ namespace Overcooked2DishwasherBot
             _avoidDirection = Vector3.zero;
             _avoidUntil = 0f;
             _brakingPathCursor = -1;
+            _interactionFacingDirection = Vector3.zero;
             _facingTarget = null;
             _facingBurstUntil = 0f;
             Status = "interaction cell rejected";
@@ -278,6 +272,7 @@ namespace Overcooked2DishwasherBot
             _hasCurrentGoal = false;
             _avoidanceMode = false;
             _brakingPathCursor = -1;
+            _interactionFacingDirection = Vector3.zero;
             _plannedTargetPosition = target.transform.position;
 
             GridManager playerGrid = GameUtils.GetGridManager(player.transform);
@@ -334,7 +329,9 @@ namespace Overcooked2DishwasherBot
                 for (int i = 0; i < FourWayOffsets.Length; i++)
                 {
                     GridIndex goal = targetIndex + FourWayOffsets[i];
-                    if (Inside(goal, halfSize) && IsWalkable(goal, start, walkingSurfaceY))
+                    if (!_rejectedInteractionCells.Contains(goal)
+                        && Inside(goal, halfSize)
+                        && IsWalkable(goal, start, walkingSurfaceY))
                     {
                         goals.Add(goal);
                     }
@@ -343,6 +340,15 @@ namespace Overcooked2DishwasherBot
 
             if (goals.Count == 0)
             {
+                if (_rejectedInteractionCells.Count > 0)
+                {
+                    // Every currently reachable side may have been rejected by the
+                    // game's interaction scan. Start a fresh cycle instead of leaving
+                    // the chef permanently idle beside the station.
+                    _rejectedInteractionCells.Clear();
+                    BuildPath(player, target, searchAllNeighbourCells);
+                    return;
+                }
                 Status = "target has no walkable adjacent cell on player layer Y=" + start.Y;
                 return;
             }
@@ -377,6 +383,9 @@ namespace Overcooked2DishwasherBot
             _hasPath = true;
             _currentGoal = bestGoal;
             _hasCurrentGoal = true;
+            _interactionFacingDirection = Flatten(
+                _grid.GetPosFromGridLocation(targetIndex)
+                - _grid.GetPosFromGridLocation(bestGoal));
             Status = "path built with " + best.Count + " waypoint(s) on player layer Y=" + start.Y;
 
             for (int i = 0; i < best.Count; i++)
@@ -597,6 +606,13 @@ namespace Overcooked2DishwasherBot
             return player == null || player.Motion == null
                 ? 0f
                 : player.Motion.GetVelocityXZ().magnitude;
+        }
+
+        private Vector3 GetFacingDirection(Vector3 fallback)
+        {
+            return _interactionFacingDirection.sqrMagnitude > 0.001f
+                ? _interactionFacingDirection.normalized
+                : fallback.normalized;
         }
 
         private bool HasSafeDashRun(PlayerControls player, Vector3 desired)
@@ -877,6 +893,16 @@ namespace Overcooked2DishwasherBot
                 _facingTarget = target;
                 _facingBurstUntil = 0f;
             }
+
+            // This is the same confirmed helper used by the game's own control code.
+            // It rotates in place, so the local interaction scan sees the correct grid
+            // direction even during a braking frame. Movement input below remains the
+            // network-synchronised fallback for a non-host keyboard player.
+            PlayerControlsHelper.TurnTowardsDirection(
+                player.gameObject,
+                desired,
+                player.Movement.TurnSpeed,
+                Time.deltaTime);
 
             Vector3 forward = Flatten(player.transform.forward);
             if (forward.sqrMagnitude > 0.001f

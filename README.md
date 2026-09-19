@@ -2,7 +2,15 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.3.2**.
+Current version: **1.3.3**.
+
+### 1.3.3 interaction-facing and sink recovery
+
+- Faces from the selected interaction-cell centre toward the target grid cell instead of aiming at a potentially offset model or attachment Transform.
+- Uses the game's confirmed `PlayerControlsHelper.TurnTowardsDirection` for in-place local alignment while retaining normal movement input as the network-synchronised fallback.
+- Removes the close-range shortcut that could enter interaction mode without recording a recoverable interaction cell.
+- Applies rejected-cell handling to cardinal sink approaches as well as eight-way pickup approaches.
+- If placement or washing is still not selected after `0.65` seconds at the sink, the bot rejects that side and routes to another reachable side; exhausted sides automatically begin a fresh search cycle rather than leaving the bot idle.
 
 ### 1.3.2 movement and interaction speed
 

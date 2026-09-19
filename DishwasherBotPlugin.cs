@@ -14,7 +14,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overcooked 2 Dishwasher Bot";
-        public const string PluginVersion = "1.3.2";
+        public const string PluginVersion = "1.3.3";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -53,6 +53,7 @@ namespace Overcooked2DishwasherBot
         private float _nextSinkScanTime;
         private float _nextDropRequestTime;
         private float _dirtyInteractionCellSince;
+        private float _sinkInteractionCellSince;
         private float _serveInteractionCellSince;
         private float _nextServeScanTime;
         private float _servePendingUntil;
@@ -365,6 +366,7 @@ namespace Overcooked2DishwasherBot
             _nextSinkScanTime = 0f;
             _nextDropRequestTime = 0f;
             _dirtyInteractionCellSince = 0f;
+            _sinkInteractionCellSince = 0f;
             _serveInteractionCellSince = 0f;
             _nextServeScanTime = 0f;
             _servePendingUntil = 0f;
@@ -535,10 +537,12 @@ namespace Overcooked2DishwasherBot
                 if (!IsUsableSink(_sinkTarget))
                 {
                     _sinkTarget = null;
+                    _sinkInteractionCellSince = 0f;
                     if (Time.time >= _nextSinkScanTime)
                     {
                         _nextSinkScanTime = Time.time + 0.5f;
                         _sinkTarget = FindNearestSink();
+                        _sinkInteractionCellSince = 0f;
                         _navigator.Clear();
                     }
                 }
@@ -569,6 +573,7 @@ namespace Overcooked2DishwasherBot
                 if (loadedSink != null && loadedSink != _sinkTarget)
                 {
                     _sinkTarget = loadedSink;
+                    _sinkInteractionCellSince = 0f;
                     _navigator.Clear();
                 }
             }
@@ -1194,6 +1199,7 @@ namespace Overcooked2DishwasherBot
 
             if (IsSinkPlacementSelected(sink))
             {
+                _sinkInteractionCellSince = 0f;
                 SetMove(Vector3.zero);
                 SetState(BotState.PlacingInSink);
                 _placementPendingUntil = Time.time + 1.2f;
@@ -1203,6 +1209,7 @@ namespace Overcooked2DishwasherBot
 
             SetState(BotState.MovingToSink);
             SetMove(direction);
+            UpdateSinkInteractionCell(atCell);
         }
 
         private void WashAtSink(ClientWashingStation sink)
@@ -1215,6 +1222,7 @@ namespace Overcooked2DishwasherBot
             ClientInteractable sinkInteractable = sink.GetComponent<ClientInteractable>();
             if (selected != null && sinkInteractable != null && selected == sinkInteractable)
             {
+                _sinkInteractionCellSince = 0f;
                 SetMove(Vector3.zero);
                 _input.SetUse(true);
                 return;
@@ -1222,6 +1230,28 @@ namespace Overcooked2DishwasherBot
 
             _input.SetUse(false);
             SetMove(direction);
+            UpdateSinkInteractionCell(atCell);
+        }
+
+        private void UpdateSinkInteractionCell(bool atCell)
+        {
+            if (!atCell)
+            {
+                _sinkInteractionCellSince = 0f;
+                return;
+            }
+            if (_sinkInteractionCellSince <= 0f)
+            {
+                _sinkInteractionCellSince = Time.time;
+            }
+            else if (Time.time - _sinkInteractionCellSince >= 0.65f)
+            {
+                if (!_navigator.RejectCurrentInteractionCell())
+                {
+                    _navigator.Clear();
+                }
+                _sinkInteractionCellSince = 0f;
+            }
         }
 
         private bool IsDirtyPickupSelected(ClientDirtyPlateStack dirty)
@@ -1495,6 +1525,7 @@ namespace Overcooked2DishwasherBot
             _navigator.Clear();
             _dirtyTarget = null;
             _sinkTarget = null;
+            _sinkInteractionCellSince = 0f;
             _carrier = null;
             _player = null;
         }
