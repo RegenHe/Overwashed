@@ -2,7 +2,14 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.4.2**.
+Current version: **1.4.3**.
+
+### 1.4.3 pathfinding performance pass
+
+- Shares a player snapshot between automatic avoidance and route building, refreshing the scene-wide `PlayerControls` lookup at most four times per second instead of potentially once per frame.
+- Replaces up to eight independent breadth-first searches for the sides of an interaction target with one multi-goal BFS while preserving shortest-path and stable-side selection.
+- Caches walkability results for each grid cell during a route build, avoiding repeated occupant checks and downward physics raycasts when the same blocked cell is examined from multiple directions.
+- Keeps the existing avoidance refresh rate, dash recovery, interaction timing, and dynamic player exclusion behaviour unchanged.
 
 ### 1.4.2 corner recovery and avoidance completion
 

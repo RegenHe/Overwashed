@@ -16,10 +16,14 @@ namespace Overcooked2DishwasherBot
             new GridIndex(0, 0, -1)
         };
 
+        private static readonly PlayerControls[] NoPlayers = new PlayerControls[0];
+
         private readonly List<Vector3> _worldPath = new List<Vector3>();
         private readonly HashSet<GridIndex> _rejectedInteractionCells = new HashSet<GridIndex>(default(GridIndex));
         private readonly HashSet<GridEdge> _blockedPathEdges = new HashSet<GridEdge>();
         private readonly HashSet<GridIndex> _dynamicBlockedCells = new HashSet<GridIndex>(default(GridIndex));
+        private readonly Dictionary<GridIndex, bool> _walkabilityCache = new Dictionary<GridIndex, bool>(default(GridIndex));
+        private PlayerControls[] _playerSnapshot = NoPlayers;
         private GameObject _target;
         private GridManager _grid;
         private GridIndex _currentGoal;
@@ -50,6 +54,11 @@ namespace Overcooked2DishwasherBot
         internal bool CanDash { get; private set; }
         internal bool CanExtremeDash { get; private set; }
 
+        internal void SetPlayerSnapshot(PlayerControls[] players)
+        {
+            _playerSnapshot = players ?? NoPlayers;
+        }
+
         internal void SetChefAvoidanceRadius(float radius)
         {
             radius = Mathf.Max(0f, radius);
@@ -77,6 +86,7 @@ namespace Overcooked2DishwasherBot
             _rejectedInteractionCells.Clear();
             _blockedPathEdges.Clear();
             _dynamicBlockedCells.Clear();
+            _walkabilityCache.Clear();
             _avoidDirection = Vector3.zero;
             _avoidUntil = 0f;
             _brakingPathCursor = -1;
@@ -431,23 +441,20 @@ namespace Overcooked2DishwasherBot
 
             preferCurrentGoal = preferCurrentGoal && goals.Contains(preferredGoal);
 
-            List<GridIndex> best = null;
-            GridIndex bestGoal = default(GridIndex);
-            for (int i = 0; i < goals.Count; i++)
+            GridIndex bestGoal;
+            List<GridIndex> best;
+            if (preferCurrentGoal)
             {
-                List<GridIndex> path = FindPath(start, goals[i], halfSize, walkingSurfaceY);
-                if (path != null
-                    && (best == null
-                        || (preferCurrentGoal && goals[i] == preferredGoal)
-                        || (!preferCurrentGoal && path.Count < best.Count)))
+                bestGoal = preferredGoal;
+                best = FindPath(start, preferredGoal, halfSize, walkingSurfaceY);
+                if (best == null)
                 {
-                    best = path;
-                    bestGoal = goals[i];
-                    if (preferCurrentGoal && goals[i] == preferredGoal)
-                    {
-                        break;
-                    }
+                    best = FindPathToNearestGoal(start, goals, halfSize, walkingSurfaceY, out bestGoal);
                 }
+            }
+            else
+            {
+                best = FindPathToNearestGoal(start, goals, halfSize, walkingSurfaceY, out bestGoal);
             }
 
             if (best == null)
@@ -811,13 +818,14 @@ namespace Overcooked2DishwasherBot
             bool includeAvoidanceRadius)
         {
             _dynamicBlockedCells.Clear();
+            _walkabilityCache.Clear();
             if (_grid == null)
             {
                 return;
             }
 
             Point3 halfSize = _grid.GetGridHalfSize();
-            PlayerControls[] players = UnityEngine.Object.FindObjectsOfType<PlayerControls>();
+            PlayerControls[] players = _playerSnapshot;
             for (int i = 0; i < players.Length; i++)
             {
                 PlayerControls other = players[i];
@@ -912,6 +920,100 @@ namespace Overcooked2DishwasherBot
             return null;
         }
 
+        private List<GridIndex> FindPathToNearestGoal(
+            GridIndex start,
+            IList<GridIndex> goals,
+            Point3 halfSize,
+            float walkingSurfaceY,
+            out GridIndex selectedGoal)
+        {
+            selectedGoal = default(GridIndex);
+            Dictionary<GridIndex, int> goalOrder = new Dictionary<GridIndex, int>(default(GridIndex));
+            for (int i = 0; i < goals.Count; i++)
+            {
+                if (!goalOrder.ContainsKey(goals[i]))
+                {
+                    goalOrder.Add(goals[i], i);
+                }
+                if (goals[i] == start)
+                {
+                    selectedGoal = start;
+                    return new List<GridIndex>();
+                }
+            }
+
+            Queue<GridIndex> open = new Queue<GridIndex>();
+            Dictionary<GridIndex, GridIndex> parent = new Dictionary<GridIndex, GridIndex>(default(GridIndex));
+            Dictionary<GridIndex, int> depth = new Dictionary<GridIndex, int>(default(GridIndex));
+            HashSet<GridIndex> visited = new HashSet<GridIndex>(default(GridIndex));
+            open.Enqueue(start);
+            visited.Add(start);
+            depth.Add(start, 0);
+
+            bool found = false;
+            int bestDepth = int.MaxValue;
+            int bestOrder = int.MaxValue;
+            int safety = 0;
+            while (open.Count > 0 && safety++ < 20000)
+            {
+                GridIndex current = open.Dequeue();
+                int currentDepth = depth[current];
+                if (currentDepth > bestDepth)
+                {
+                    break;
+                }
+
+                int currentGoalOrder;
+                if (goalOrder.TryGetValue(current, out currentGoalOrder))
+                {
+                    if (!found || currentGoalOrder < bestOrder)
+                    {
+                        found = true;
+                        selectedGoal = current;
+                        bestDepth = currentDepth;
+                        bestOrder = currentGoalOrder;
+                    }
+                    continue;
+                }
+                if (currentDepth >= bestDepth)
+                {
+                    continue;
+                }
+
+                for (int i = 0; i < FourWayOffsets.Length; i++)
+                {
+                    GridIndex next = current + FourWayOffsets[i];
+                    if (!Inside(next, halfSize)
+                        || visited.Contains(next)
+                        || !IsWalkable(next, start, walkingSurfaceY)
+                        || _blockedPathEdges.Contains(new GridEdge(current, next)))
+                    {
+                        continue;
+                    }
+
+                    visited.Add(next);
+                    parent.Add(next, current);
+                    depth.Add(next, currentDepth + 1);
+                    open.Enqueue(next);
+                }
+            }
+
+            if (!found)
+            {
+                return null;
+            }
+
+            List<GridIndex> result = new List<GridIndex>();
+            GridIndex cursor = selectedGoal;
+            while (cursor != start)
+            {
+                result.Add(cursor);
+                cursor = parent[cursor];
+            }
+            result.Reverse();
+            return result;
+        }
+
         private bool IsWalkable(GridIndex index, GridIndex start, float walkingSurfaceY)
         {
             if (index == start)
@@ -924,14 +1026,23 @@ namespace Overcooked2DishwasherBot
                 return false;
             }
 
+            bool cached;
+            if (_walkabilityCache.TryGetValue(index, out cached))
+            {
+                return cached;
+            }
+
             GameObject occupant = _grid.GetGridOccupant(index);
             if (occupant != null && !IsWalkableOccupant(occupant))
             {
+                _walkabilityCache[index] = false;
                 return false;
             }
 
             RaycastHit hit;
-            return TryFindGround(_grid.GetPosFromGridLocation(index), walkingSurfaceY, out hit);
+            bool walkable = TryFindGround(_grid.GetPosFromGridLocation(index), walkingSurfaceY, out hit);
+            _walkabilityCache[index] = walkable;
+            return walkable;
         }
 
         private static bool IsWalkableOccupant(GameObject occupant)

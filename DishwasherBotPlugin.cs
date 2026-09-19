@@ -14,7 +14,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overcooked 2 Dishwasher Bot";
-        public const string PluginVersion = "1.4.2";
+        public const string PluginVersion = "1.4.3";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -26,6 +26,7 @@ namespace Overcooked2DishwasherBot
         private readonly AutoServePlanner _servePlanner = new AutoServePlanner();
         private readonly HashSet<string> _reportedErrors = new HashSet<string>();
         private readonly List<Vector3> _avoidanceThreats = new List<Vector3>();
+        private static readonly PlayerControls[] NoPlayers = new PlayerControls[0];
 
         private ManualLogSource _log;
         private ConfigEntry<bool> _autoAvoidance;
@@ -59,6 +60,8 @@ namespace Overcooked2DishwasherBot
         private float _serveInteractionCellSince;
         private float _nextServeScanTime;
         private float _servePendingUntil;
+        private float _nextPlayerSnapshotTime;
+        private PlayerControls[] _playerSnapshot = NoPlayers;
         private int _droppingItemId;
         private GameObject _lastDirtyInteractionTarget;
         private Texture2D _statusBackground;
@@ -428,6 +431,8 @@ namespace Overcooked2DishwasherBot
             _serveInteractionCellSince = 0f;
             _nextServeScanTime = 0f;
             _servePendingUntil = 0f;
+            _nextPlayerSnapshotTime = 0f;
+            _playerSnapshot = NoPlayers;
             _droppingItemId = 0;
             _lastDirtyInteractionTarget = null;
             _avoidingPlayers = false;
@@ -477,7 +482,7 @@ namespace Overcooked2DishwasherBot
             }
             _nextAcquireTime = Time.unscaledTime + (FastModeEnabled ? 0.1f : 0.75f);
 
-            PlayerControls[] players = FindObjectsOfType<PlayerControls>();
+            PlayerControls[] players = GetPlayerSnapshot(true);
             Array.Sort(players, delegate(PlayerControls left, PlayerControls right)
             {
                 int leftId = left == null || left.PlayerIDProvider == null ? int.MaxValue : (int)left.PlayerIDProvider.GetID();
@@ -512,6 +517,16 @@ namespace Overcooked2DishwasherBot
             }
 
             return false;
+        }
+
+        private PlayerControls[] GetPlayerSnapshot(bool forceRefresh)
+        {
+            if (forceRefresh || Time.unscaledTime >= _nextPlayerSnapshotTime)
+            {
+                _playerSnapshot = FindObjectsOfType<PlayerControls>();
+                _nextPlayerSnapshotTime = Time.unscaledTime + 0.25f;
+            }
+            return _playerSnapshot ?? NoPlayers;
         }
 
         private bool EnsureNetworkInput()
@@ -564,6 +579,8 @@ namespace Overcooked2DishwasherBot
             SetMove(Vector3.zero);
 
             GameObject carried = _carrier.InspectCarriedItem();
+            PlayerControls[] players = GetPlayerSnapshot(false);
+            _navigator.SetPlayerSnapshot(players);
             float chefAvoidanceRadius = _autoAvoidance != null && _autoAvoidance.Value
                 ? Mathf.Clamp(_avoidanceDistance.Value, 0.5f, 4f)
                 : 0f;
@@ -577,7 +594,7 @@ namespace Overcooked2DishwasherBot
             }
             _droppingItemId = 0;
 
-            if (TryAvoidPlayers())
+            if (TryAvoidPlayers(players))
             {
                 return;
             }
@@ -1042,7 +1059,7 @@ namespace Overcooked2DishwasherBot
             }
         }
 
-        private bool TryAvoidPlayers()
+        private bool TryAvoidPlayers(PlayerControls[] players)
         {
             if (_autoAvoidance == null || !_autoAvoidance.Value || _player == null)
             {
@@ -1057,7 +1074,6 @@ namespace Overcooked2DishwasherBot
             Vector3 botPosition = _player.transform.position;
             GridManager botGrid = GameUtils.GetGridManager(_player.transform);
 
-            PlayerControls[] players = FindObjectsOfType<PlayerControls>();
             for (int i = 0; i < players.Length; i++)
             {
                 PlayerControls other = players[i];
@@ -1594,6 +1610,8 @@ namespace Overcooked2DishwasherBot
         {
             _avoidingPlayers = false;
             _avoidanceThreats.Clear();
+            _nextPlayerSnapshotTime = 0f;
+            _playerSnapshot = NoPlayers;
             ResetServingPlan(false);
             ReleaseRobotInputs(true);
             _navigator.Clear();
