@@ -1,8 +1,14 @@
-# Overcooked 2 Dishwasher Bot
+# Overwashed
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.4.3**.
+Current version: **1.4.4**.
+
+### 1.4.4 Overwashed rename
+
+- Renames the release DLL and BepInEx display name to `Overwashed`.
+- Keeps the existing plugin GUID and configuration keys, so settings from earlier versions continue to load.
+- The build removes the legacy `Overcooked2.DishwasherBot.dll` after successfully deploying `Overwashed.dll`, preventing duplicate plugin loading.
 
 ### 1.4.3 pathfinding performance pass
 
@@ -172,7 +178,7 @@ From this directory:
 .\build.ps1 -Configuration Release
 ```
 
-The project and build script reference the game's own Mono/.NET, Unity, `Assembly-CSharp.dll`, and BepInEx assemblies. The script invokes the installed SDK's Roslyn compiler with `nostdlib`, so it does not download .NET 3.5 reference packs or create files outside the game directory. A successful build copies `Overcooked2.DishwasherBot.dll` to `BepInEx\plugins` automatically.
+The project and build script reference the game's own Mono/.NET, Unity, `Assembly-CSharp.dll`, and BepInEx assemblies. The script invokes the installed SDK's Roslyn compiler with `nostdlib`, so it does not download .NET 3.5 reference packs or create files outside the game directory. A successful build copies `Overwashed.dll` to `BepInEx\plugins` automatically.
 
 ## Runtime states and logging
 

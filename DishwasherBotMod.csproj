@@ -2,7 +2,7 @@
   <PropertyGroup>
     <TargetFramework>net35</TargetFramework>
     <OutputType>Library</OutputType>
-    <AssemblyName>Overcooked2.DishwasherBot</AssemblyName>
+    <AssemblyName>Overwashed</AssemblyName>
     <RootNamespace>Overcooked2DishwasherBot</RootNamespace>
     <LangVersion>7.3</LangVersion>
     <Nullable>disable</Nullable>
@@ -31,5 +31,7 @@
 
   <Target Name="Deploy" AfterTargets="Build">
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(BepInExDir)plugins" />
+    <Delete Files="$(BepInExDir)plugins\Overcooked2.DishwasherBot.dll"
+            Condition="Exists('$(BepInExDir)plugins\Overcooked2.DishwasherBot.dll')" />
   </Target>
 </Project>

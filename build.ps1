@@ -15,8 +15,11 @@ $outputDir = if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 } else {
     $OutputDirectory
 }
-$output = Join-Path $outputDir 'Overcooked2.DishwasherBot.dll'
-$deployed = Join-Path $gameRoot 'BepInEx\plugins\Overcooked2.DishwasherBot.dll'
+$output = Join-Path $outputDir 'Overwashed.dll'
+$deployed = Join-Path $gameRoot 'BepInEx\plugins\Overwashed.dll'
+$legacyOutput = Join-Path $outputDir 'Overcooked2.DishwasherBot.dll'
+$legacyPdb = Join-Path $outputDir 'Overcooked2.DishwasherBot.pdb'
+$legacyDeployed = Join-Path $gameRoot 'BepInEx\plugins\Overcooked2.DishwasherBot.dll'
 
 # Keep every cache/temp write inside the game directory as requested.
 $env:DOTNET_CLI_HOME = $localDotnetHome
@@ -79,5 +82,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Copy-Item -LiteralPath $output -Destination $deployed -Force
+if (Test-Path -LiteralPath $legacyOutput) {
+    Remove-Item -LiteralPath $legacyOutput -Force
+}
+if (Test-Path -LiteralPath $legacyPdb) {
+    Remove-Item -LiteralPath $legacyPdb -Force
+}
+if (Test-Path -LiteralPath $legacyDeployed) {
+    Remove-Item -LiteralPath $legacyDeployed -Force
+}
 Write-Host "Built:    $output"
 Write-Host "Deployed: $deployed"

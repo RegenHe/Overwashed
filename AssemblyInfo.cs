@@ -1,10 +1,10 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 
-[assembly: AssemblyTitle("Overcooked 2 Dishwasher Bot")]
+[assembly: AssemblyTitle("Overwashed")]
 [assembly: AssemblyDescription("Controls the current keyboard chef to wash plates and optionally serve completed orders.")]
 [assembly: AssemblyCompany("Local Mod")]
-[assembly: AssemblyProduct("Overcooked 2 Dishwasher Bot")]
+[assembly: AssemblyProduct("Overwashed")]
 [assembly: ComVisible(false)]
-[assembly: AssemblyVersion("1.4.3.0")]
-[assembly: AssemblyFileVersion("1.4.3.0")]
+[assembly: AssemblyVersion("1.4.4.0")]
+[assembly: AssemblyFileVersion("1.4.4.0")]

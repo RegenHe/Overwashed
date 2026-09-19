@@ -13,8 +13,8 @@ namespace Overcooked2DishwasherBot
     public sealed class DishwasherBotPlugin : BaseUnityPlugin
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
-        public const string PluginName = "Overcooked 2 Dishwasher Bot";
-        public const string PluginVersion = "1.4.3";
+        public const string PluginName = "Overwashed";
+        public const string PluginVersion = "1.4.4";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -243,7 +243,7 @@ namespace Overcooked2DishwasherBot
 
             GUI.depth = -1001;
             GUI.color = Color.white;
-            GUI.Box(panel, "Dishwasher Bot Settings");
+            GUI.Box(panel, "Overwashed Settings");
 
             bool enabled = GUI.Toggle(
                 new Rect(panel.x + 16f, panel.y + 32f, panel.width - 32f, 22f),
