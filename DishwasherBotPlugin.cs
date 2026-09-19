@@ -14,7 +14,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overcooked 2 Dishwasher Bot";
-        public const string PluginVersion = "1.3.3";
+        public const string PluginVersion = "1.4.0";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -32,6 +32,8 @@ namespace Overcooked2DishwasherBot
         private ConfigEntry<float> _avoidanceDistance;
         private ConfigEntry<bool> _autoServeReadyOrders;
         private ConfigEntry<bool> _serveInOrder;
+        private ConfigEntry<bool> _fastMode;
+        private ConfigEntry<bool> _extremeMode;
         private bool _enabled;
         private bool _showSettings;
         private bool _avoidingPlayers;
@@ -93,6 +95,21 @@ namespace Overcooked2DishwasherBot
             Delivering
         }
 
+        private bool FastModeEnabled
+        {
+            get { return _fastMode != null && _fastMode.Value; }
+        }
+
+        private float ScanInterval
+        {
+            get { return FastModeEnabled ? 0.1f : 0.5f; }
+        }
+
+        private float InteractionRetryInterval
+        {
+            get { return FastModeEnabled ? 0.1f : 0.75f; }
+        }
+
         private void Awake()
         {
             _log = Logger;
@@ -118,6 +135,16 @@ namespace Overcooked2DishwasherBot
                 "ServeInOrder",
                 true,
                 "Only serve the oldest active order. Disable to serve any matching active order.");
+            _fastMode = Config.Bind(
+                "Speed",
+                "FastMode",
+                false,
+                "Reduce target scans, interaction retries, and action retry delays to about 0.1 seconds.");
+            _extremeMode = Config.Bind(
+                "Speed",
+                "ExtremeMode",
+                false,
+                "Repeatedly dash whenever the current route has more than a short distance remaining.");
             CreateStatusBadgeTextures();
             _log.LogInfo(PluginName + " " + PluginVersion + " loaded. Press F8 to toggle; click the active bot icon for settings.");
             if (ClientSinkPlateCount == null)
@@ -207,7 +234,7 @@ namespace Overcooked2DishwasherBot
         private void DrawSettingsPanel()
         {
             const float width = 286f;
-            const float height = 202f;
+            const float height = 258f;
             float left = Mathf.Max(8f, Screen.width - width - 12f);
             Rect panel = new Rect(left, 52f, width, height);
 
@@ -262,8 +289,39 @@ namespace Overcooked2DishwasherBot
                 ResetServingPlan(true);
             }
 
+            bool fastMode = GUI.Toggle(
+                new Rect(panel.x + 16f, panel.y + 162f, panel.width - 32f, 22f),
+                _fastMode.Value,
+                "Fast interactions");
+            if (fastMode != _fastMode.Value)
+            {
+                _fastMode.Value = fastMode;
+                _nextActionTime = 0f;
+                _nextDirtyScanTime = 0f;
+                _nextSinkScanTime = 0f;
+                _nextServeScanTime = 0f;
+                _dirtyInteractionCellSince = 0f;
+                _sinkInteractionCellSince = 0f;
+                _serveInteractionCellSince = 0f;
+            }
+
+            bool extremeMode = GUI.Toggle(
+                new Rect(panel.x + 16f, panel.y + 188f, panel.width - 32f, 22f),
+                _extremeMode.Value,
+                "Extreme dash mode");
+            if (extremeMode != _extremeMode.Value)
+            {
+                _extremeMode.Value = extremeMode;
+                _dashDownUntil = 0f;
+                _nextDashTime = 0f;
+                if (_input != null)
+                {
+                    _input.SetDash(false);
+                }
+            }
+
             GUI.Label(
-                new Rect(panel.x + 16f, panel.y + 170f, panel.width - 32f, 22f),
+                new Rect(panel.x + 16f, panel.y + 226f, panel.width - 32f, 22f),
                 "Click the bot icon to close settings");
         }
 
@@ -417,7 +475,7 @@ namespace Overcooked2DishwasherBot
             {
                 return false;
             }
-            _nextAcquireTime = Time.unscaledTime + 0.75f;
+            _nextAcquireTime = Time.unscaledTime + (FastModeEnabled ? 0.1f : 0.75f);
 
             PlayerControls[] players = FindObjectsOfType<PlayerControls>();
             Array.Sort(players, delegate(PlayerControls left, PlayerControls right)
@@ -540,7 +598,7 @@ namespace Overcooked2DishwasherBot
                     _sinkInteractionCellSince = 0f;
                     if (Time.time >= _nextSinkScanTime)
                     {
-                        _nextSinkScanTime = Time.time + 0.5f;
+                        _nextSinkScanTime = Time.time + ScanInterval;
                         _sinkTarget = FindNearestSink();
                         _sinkInteractionCellSince = 0f;
                         _navigator.Clear();
@@ -568,7 +626,7 @@ namespace Overcooked2DishwasherBot
             if ((!IsUsableSink(_sinkTarget) || GetPlateCount(_sinkTarget) <= 0)
                 && Time.time >= _nextSinkScanTime)
             {
-                _nextSinkScanTime = Time.time + 0.5f;
+                _nextSinkScanTime = Time.time + ScanInterval;
                 ClientWashingStation loadedSink = FindSinkWithDirtyPlates();
                 if (loadedSink != null && loadedSink != _sinkTarget)
                 {
@@ -589,7 +647,7 @@ namespace Overcooked2DishwasherBot
                 _dirtyTarget = null;
                 if (Time.time >= _nextDirtyScanTime)
                 {
-                    _nextDirtyScanTime = Time.time + 0.5f;
+                    _nextDirtyScanTime = Time.time + ScanInterval;
                     _dirtyTarget = FindNearestDirtyStack();
                     _navigator.Clear();
                 }
@@ -721,7 +779,7 @@ namespace Overcooked2DishwasherBot
             {
                 return false;
             }
-            _nextServeScanTime = Time.time + 0.5f;
+            _nextServeScanTime = Time.time + ScanInterval;
 
             AutoServePlan plan;
             string planningError;
@@ -846,7 +904,7 @@ namespace Overcooked2DishwasherBot
                 return;
             }
             PulsePickup();
-            _servePendingUntil = Time.time + pendingSeconds;
+            _servePendingUntil = Time.time + (FastModeEnabled ? 0.15f : pendingSeconds);
         }
 
         private void UpdateServingInteractionCell(bool atCell)
@@ -860,7 +918,7 @@ namespace Overcooked2DishwasherBot
             {
                 _serveInteractionCellSince = Time.time;
             }
-            else if (Time.time - _serveInteractionCellSince >= 0.75f)
+            else if (Time.time - _serveInteractionCellSince >= InteractionRetryInterval)
             {
                 _navigator.RejectCurrentInteractionCell();
                 _serveInteractionCellSince = 0f;
@@ -1086,7 +1144,7 @@ namespace Overcooked2DishwasherBot
             {
                 return;
             }
-            _nextDropRequestTime = Time.time + 0.75f;
+            _nextDropRequestTime = Time.time + (FastModeEnabled ? 0.1f : 0.75f);
 
             if (SendChefEvent == null)
             {
@@ -1149,7 +1207,7 @@ namespace Overcooked2DishwasherBot
             {
                 _dirtyInteractionCellSince = Time.time;
             }
-            else if (Time.time - _dirtyInteractionCellSince >= 0.75f)
+            else if (Time.time - _dirtyInteractionCellSince >= InteractionRetryInterval)
             {
                 _navigator.RejectCurrentInteractionCell();
                 _dirtyInteractionCellSince = 0f;
@@ -1202,7 +1260,7 @@ namespace Overcooked2DishwasherBot
                 _sinkInteractionCellSince = 0f;
                 SetMove(Vector3.zero);
                 SetState(BotState.PlacingInSink);
-                _placementPendingUntil = Time.time + 1.2f;
+                _placementPendingUntil = Time.time + (FastModeEnabled ? 0.15f : 1.2f);
                 PulsePickup();
                 return;
             }
@@ -1244,7 +1302,8 @@ namespace Overcooked2DishwasherBot
             {
                 _sinkInteractionCellSince = Time.time;
             }
-            else if (Time.time - _sinkInteractionCellSince >= 0.65f)
+            else if (Time.time - _sinkInteractionCellSince
+                >= (FastModeEnabled ? 0.1f : 0.65f))
             {
                 if (!_navigator.RejectCurrentInteractionCell())
                 {
@@ -1405,8 +1464,8 @@ namespace Overcooked2DishwasherBot
             {
                 return;
             }
-            _pickupDownUntil = Time.time + 0.12f;
-            _nextActionTime = Time.time + 0.35f;
+            _pickupDownUntil = Time.time + (FastModeEnabled ? 0.05f : 0.12f);
+            _nextActionTime = Time.time + (FastModeEnabled ? 0.1f : 0.35f);
             _input.SetPickup(true);
         }
 
@@ -1439,12 +1498,16 @@ namespace Overcooked2DishwasherBot
             }
             _input.SetWorldDirection(new Vector3Like(worldDirection.x, worldDirection.z), _player.Movement);
 
+            bool extremeMode = _extremeMode != null && _extremeMode.Value;
+            bool routeAllowsDash = extremeMode
+                ? _navigator.CanExtremeDash
+                : _navigator.CanDash;
             if (worldDirection.sqrMagnitude > 0.01f
-                && _navigator.CanDash
+                && routeAllowsDash
                 && Time.time >= _nextDashTime)
             {
-                _dashDownUntil = Time.time + 0.08f;
-                _nextDashTime = Time.time + 0.85f;
+                _dashDownUntil = Time.time + (extremeMode ? 0.06f : 0.08f);
+                _nextDashTime = Time.time + (extremeMode ? 0.14f : 0.85f);
                 _input.SetDash(true);
             }
         }

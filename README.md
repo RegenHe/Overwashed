@@ -2,7 +2,15 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.3.3**.
+Current version: **1.4.0**.
+
+### 1.4.0 optional speed modes
+
+- Adds `Fast interactions`, disabled by default and saved through BepInEx configuration.
+- Fast mode reduces target scans, pickup/action retries, interaction-cell rejection, sink recovery, and serving acknowledgement waits to approximately `0.1`–`0.15` seconds. Its pickup pulse is shortened so repeated attempts still generate distinct button presses.
+- Adds `Extreme dash mode`, also disabled by default and independently configurable.
+- Extreme mode starts repeated normal dash-input pulses whenever more than `1.1` route tiles remain. It intentionally ignores upcoming turns for maximum movement speed, but still requires the chef to face generally along the route and refuses to dash into an immediate collider or during the final interaction approach.
+- Normal mode retains the conservative three-tile straight-route dash and all prior timings.
 
 ### 1.3.3 interaction-facing and sink recovery
 

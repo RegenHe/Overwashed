@@ -41,6 +41,7 @@ namespace Overcooked2DishwasherBot
 
         internal string Status { get; private set; }
         internal bool CanDash { get; private set; }
+        internal bool CanExtremeDash { get; private set; }
 
         internal void Clear()
         {
@@ -65,6 +66,7 @@ namespace Overcooked2DishwasherBot
             _facingTarget = null;
             _facingBurstUntil = 0f;
             CanDash = false;
+            CanExtremeDash = false;
             Status = "cleared";
         }
 
@@ -81,6 +83,7 @@ namespace Overcooked2DishwasherBot
         {
             atInteractionCell = false;
             CanDash = false;
+            CanExtremeDash = false;
             if (player == null || target == null)
             {
                 return Vector3.zero;
@@ -162,6 +165,7 @@ namespace Overcooked2DishwasherBot
                 return Vector3.zero;
             }
             CanDash = HasSafeDashRun(player, toWaypoint.normalized);
+            CanExtremeDash = HasExtremeDashRun(player, toWaypoint.normalized);
             return SafeRouteDirection(player, toWaypoint.normalized);
         }
 
@@ -173,6 +177,7 @@ namespace Overcooked2DishwasherBot
         {
             hasEscapePath = false;
             CanDash = false;
+            CanExtremeDash = false;
             if (player == null || threatPositions == null || threatPositions.Count == 0)
             {
                 return Vector3.zero;
@@ -653,6 +658,35 @@ namespace Overcooked2DishwasherBot
 
             return straightDistance >= 3.0f
                 && !HasBlockingCollider(player, null, desired, 1.25f);
+        }
+
+        private bool HasExtremeDashRun(PlayerControls player, Vector3 desired)
+        {
+            if (_pathCursor < 0 || _pathCursor >= _worldPath.Count)
+            {
+                return false;
+            }
+
+            desired = Flatten(desired);
+            Vector3 forward = Flatten(player.transform.forward);
+            if (desired.sqrMagnitude < 0.001f
+                || forward.sqrMagnitude < 0.001f
+                || Vector3.Dot(forward.normalized, desired.normalized) < 0.8f)
+            {
+                return false;
+            }
+
+            float remainingDistance = Flatten(
+                _worldPath[_pathCursor] - player.transform.position).magnitude;
+            for (int i = _pathCursor + 1; i < _worldPath.Count; i++)
+            {
+                remainingDistance += Flatten(_worldPath[i] - _worldPath[i - 1]).magnitude;
+            }
+
+            // Extreme mode intentionally ignores future corners, but it still avoids
+            // dashing during the final short approach or straight into an immediate body.
+            return remainingDistance >= 1.1f
+                && !HasBlockingCollider(player, null, desired.normalized, 0.55f);
         }
 
         private static StaticGridLocation FindRegisteredGridLocation(GameObject target)
