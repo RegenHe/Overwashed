@@ -19,6 +19,7 @@ These names and signatures were taken from the locally installed `Overcooked2_Da
 - `ServerInputReceiver` applies the transmitted axes/buttons to server-side `NetworkLogicalValue`/`NetworkLogicalButton` objects.
 - `ClientChefSynchroniser.FixedUpdate()` calls `RunCorrection()` for the locally controlled remote chef and corrects client prediction toward the server-authoritative position. `ClientOnTheServerChefSynchroniser` does not have this remote correction path.
 - `GridManager`: `GetGridLocationFromPos`, `GetUnclampedGridLocationFromPos`, `GetPosFromGridLocation`, `GetGridOccupant`, `GetGridHalfSize`.
+- Dynamic chefs are not represented by `GridManager.GetGridOccupant`; their world positions must be projected with `GetUnclampedGridLocationFromPos` and temporarily excluded by the Mod's BFS.
 - `InteractWithItemHelper` confirms kitchen interaction scans use the four cardinal grid neighbours and a one-unit interaction radius.
 - `ClientKitchenFlowControllerBase.GetMonitorForTeam(TeamID)` provides the local team's `ClientTeamMonitor`; its `OrdersController` points to `ClientOrderControllerBase`.
 - `ClientOrderControllerBase.m_activeOrders` contains the live display order, and each nested `ActiveOrder.RecipeListEntry` points to the required `OrderDefinitionNode`.

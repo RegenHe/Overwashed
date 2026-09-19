@@ -14,7 +14,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overcooked 2 Dishwasher Bot";
-        public const string PluginVersion = "1.4.0";
+        public const string PluginVersion = "1.4.1";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -1509,6 +1509,7 @@ namespace Overcooked2DishwasherBot
                 _dashDownUntil = Time.time + (extremeMode ? 0.06f : 0.08f);
                 _nextDashTime = Time.time + (extremeMode ? 0.14f : 0.85f);
                 _input.SetDash(true);
+                _navigator.NotifyDashStarted(_player.Movement.DashTime);
             }
         }
 

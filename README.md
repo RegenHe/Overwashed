@@ -2,7 +2,15 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.4.0**.
+Current version: **1.4.1**.
+
+### 1.4.1 dash-aware replanning and chef detours
+
+- Rebuilds the route after the chef moves approximately one grid tile from the last plan, rather than relying only on a timer.
+- Entering a dash requests an immediate route refresh; while dash motion continues, the route is rebuilt after each `0.45` tile of displacement so overshoot is incorporated quickly.
+- Detects when momentum has already carried the chef beyond a non-final waypoint and advances the path cursor instead of turning around to chase that old point.
+- Treats other active chefs' current grid cells as temporary BFS obstacles. If another chef blocks the next movement segment, the bot immediately requests a route around them when the kitchen has an alternate passage.
+- A genuinely single-width passage still waits for the blocking chef, because no collision-free detour exists.
 
 ### 1.4.0 optional speed modes
 
