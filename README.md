@@ -2,7 +2,14 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.4.1**.
+Current version: **1.4.2**.
+
+### 1.4.2 corner recovery and avoidance completion
+
+- Measures real route progress in `0.25`-tile increments, so collision jitter no longer disguises a chef that is repeatedly dashing into a wall or corner.
+- After `0.5` seconds without useful progress, temporarily suppresses dashing, rejects the stuck route edge, and rebuilds a walking route. Extreme dashes now also require ground and a clear one-tile forward sweep.
+- Treats arrival at the selected avoidance goal cell as completion instead of continuously selecting new boundary cells.
+- While automatic avoidance is enabled, normal washing and serving routes treat every other chef's configured avoidance radius as a dynamic forbidden area and refresh that route every `0.3` seconds. Avoidance itself only moves the bot out of the area; the resumed task then routes around it instead of relying on a timing grace period.
 
 ### 1.4.1 dash-aware replanning and chef detours
 

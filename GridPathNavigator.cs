@@ -37,14 +37,30 @@ namespace Overcooked2DishwasherBot
         private Vector3 _plannedTargetPosition;
         private Vector3 _pathStartPoint;
         private Vector3 _routeBuildPosition;
+        private Vector3 _meaningfulProgressPosition;
         private Vector3 _interactionFacingDirection;
         private GameObject _facingTarget;
         private float _facingBurstUntil;
         private float _dashRepathUntil;
+        private float _meaningfulProgressTime;
+        private float _dashSuppressedUntil;
+        private float _chefAvoidanceRadius;
 
         internal string Status { get; private set; }
         internal bool CanDash { get; private set; }
         internal bool CanExtremeDash { get; private set; }
+
+        internal void SetChefAvoidanceRadius(float radius)
+        {
+            radius = Mathf.Max(0f, radius);
+            if (Mathf.Abs(radius - _chefAvoidanceRadius) < 0.01f)
+            {
+                return;
+            }
+
+            _chefAvoidanceRadius = radius;
+            _nextRepathTime = 0f;
+        }
 
         internal void Clear()
         {
@@ -67,10 +83,13 @@ namespace Overcooked2DishwasherBot
             _plannedTargetPosition = Vector3.zero;
             _pathStartPoint = Vector3.zero;
             _routeBuildPosition = Vector3.zero;
+            _meaningfulProgressPosition = Vector3.zero;
             _interactionFacingDirection = Vector3.zero;
             _facingTarget = null;
             _facingBurstUntil = 0f;
             _dashRepathUntil = 0f;
+            _meaningfulProgressTime = 0f;
+            _dashSuppressedUntil = 0f;
             CanDash = false;
             CanExtremeDash = false;
             Status = "cleared";
@@ -126,6 +145,14 @@ namespace Overcooked2DishwasherBot
                 _facingTarget = null;
                 _facingBurstUntil = 0f;
             }
+            if (targetChanged
+                || targetMoved
+                || _meaningfulProgressTime <= 0f
+                || Flatten(playerPosition - _meaningfulProgressPosition).sqrMagnitude >= 0.25f * 0.25f)
+            {
+                _meaningfulProgressPosition = playerPosition;
+                _meaningfulProgressTime = Time.time;
+            }
             bool stuck = Time.time - _stuckSince > 1.25f;
             float distanceRepathThreshold = Time.time < _dashRepathUntil ? 0.45f : 1f;
             bool movedSinceRouteBuild = _hasPath
@@ -139,7 +166,8 @@ namespace Overcooked2DishwasherBot
             {
                 _target = target;
                 BuildPath(player, target, searchAllNeighbourCells);
-                _nextRepathTime = Time.time + (stuck ? 0.35f : (_hasPath ? 0.9f : 0.25f));
+                float normalRepathInterval = _chefAvoidanceRadius > 0f ? 0.3f : 0.9f;
+                _nextRepathTime = Time.time + (stuck ? 0.35f : (_hasPath ? normalRepathInterval : 0.25f));
                 if (stuck)
                 {
                     _stuckSince = Time.time;
@@ -184,6 +212,16 @@ namespace Overcooked2DishwasherBot
                 Status = "chef blocking route; requesting alternate path";
                 return Vector3.zero;
             }
+            if (Time.time - _meaningfulProgressTime >= 0.5f)
+            {
+                _dashSuppressedUntil = Time.time + 1.5f;
+                BlockCurrentRouteEdge(player);
+                _nextRepathTime = 0f;
+                _meaningfulProgressPosition = playerPosition;
+                _meaningfulProgressTime = Time.time;
+                Status = "no route progress; suppressing dash and replanning";
+                return Vector3.zero;
+            }
             CanDash = HasSafeDashRun(player, toWaypoint.normalized);
             CanExtremeDash = HasExtremeDashRun(player, toWaypoint.normalized);
             return SafeRouteDirection(player, toWaypoint.normalized);
@@ -205,9 +243,9 @@ namespace Overcooked2DishwasherBot
             PlayerControls player,
             IList<Vector3> threatPositions,
             float safeDistance,
-            out bool hasEscapePath)
+            out bool reachedAvoidanceGoal)
         {
-            hasEscapePath = false;
+            reachedAvoidanceGoal = false;
             CanDash = false;
             CanExtremeDash = false;
             if (player == null || threatPositions == null || threatPositions.Count == 0)
@@ -257,7 +295,6 @@ namespace Overcooked2DishwasherBot
 
             if (_pathCursor < _worldPath.Count)
             {
-                hasEscapePath = true;
                 Vector3 toWaypoint = Flatten(_worldPath[_pathCursor] - playerPosition);
                 Status = "avoiding player via waypoint " + (_pathCursor + 1) + "/" + _worldPath.Count;
                 return SafeRouteDirection(player, toWaypoint.normalized);
@@ -270,7 +307,7 @@ namespace Overcooked2DishwasherBot
                 return SafeDirection(player, null, fallback.normalized);
             }
 
-            hasEscapePath = _hasPath;
+            reachedAvoidanceGoal = _hasPath;
             Status = "at avoidance goal";
             return Vector3.zero;
         }
@@ -325,7 +362,7 @@ namespace Overcooked2DishwasherBot
             _grid = playerGrid;
             GridIndex start = _grid.GetUnclampedGridLocationFromPos(player.transform.position);
             float walkingSurfaceY = GetWalkingSurfaceY(player);
-            CollectDynamicBlockedCells(player, start, walkingSurfaceY);
+            CollectDynamicBlockedCells(player, start, walkingSurfaceY, true);
             // Some kitchens register counters and stations on local GridManager instances
             // even though chefs can walk between them on one continuous floor. A grid ID
             // mismatch therefore does not mean the target is physically unreachable.
@@ -415,6 +452,10 @@ namespace Overcooked2DishwasherBot
 
             if (best == null)
             {
+                // A learned edge may leave a genuinely narrow area with no alternate
+                // route. Forget it for the next (non-dashing) attempt rather than making
+                // the target permanently unreachable.
+                _blockedPathEdges.Clear();
                 Status = "path search failed on player layer Y=" + start.Y;
                 return;
             }
@@ -461,7 +502,9 @@ namespace Overcooked2DishwasherBot
             float walkingSurfaceY = GetWalkingSurfaceY(player);
             GridIndex start = _grid.GetUnclampedGridLocationFromPos(playerPosition);
             Point3 halfSize = _grid.GetGridHalfSize();
-            CollectDynamicBlockedCells(player, start, walkingSurfaceY);
+            // The bot may begin avoidance inside the configured clearance radius. Only
+            // the chefs' occupied cells are blocked here so an outward route can be built.
+            CollectDynamicBlockedCells(player, start, walkingSurfaceY, false);
             _pathStartPoint = _grid.GetPosFromGridLocation(start);
             int maxDepth = Mathf.Clamp(Mathf.CeilToInt(safeDistance) + 2, 3, 6);
             float safeDistanceSquared = safeDistance * safeDistance;
@@ -681,7 +724,9 @@ namespace Overcooked2DishwasherBot
 
         private bool HasSafeDashRun(PlayerControls player, Vector3 desired)
         {
-            if (_pathCursor < 0 || _pathCursor >= _worldPath.Count)
+            if (Time.time < _dashSuppressedUntil
+                || _pathCursor < 0
+                || _pathCursor >= _worldPath.Count)
             {
                 return false;
             }
@@ -721,7 +766,9 @@ namespace Overcooked2DishwasherBot
 
         private bool HasExtremeDashRun(PlayerControls player, Vector3 desired)
         {
-            if (_pathCursor < 0 || _pathCursor >= _worldPath.Count)
+            if (Time.time < _dashSuppressedUntil
+                || _pathCursor < 0
+                || _pathCursor >= _worldPath.Count)
             {
                 return false;
             }
@@ -745,7 +792,8 @@ namespace Overcooked2DishwasherBot
             // Extreme mode intentionally ignores future corners, but it still avoids
             // dashing during the final short approach or straight into an immediate body.
             return remainingDistance >= 1.1f
-                && !HasBlockingCollider(player, null, desired.normalized, 0.55f);
+                && HasGroundAhead(player, null, desired.normalized)
+                && !HasBlockingCollider(player, null, desired.normalized, 1f);
         }
 
         private static StaticGridLocation FindRegisteredGridLocation(GameObject target)
@@ -759,7 +807,8 @@ namespace Overcooked2DishwasherBot
         private void CollectDynamicBlockedCells(
             PlayerControls player,
             GridIndex start,
-            float walkingSurfaceY)
+            float walkingSurfaceY,
+            bool includeAvoidanceRadius)
         {
             _dynamicBlockedCells.Clear();
             if (_grid == null)
@@ -781,10 +830,35 @@ namespace Overcooked2DishwasherBot
                     continue;
                 }
 
-                GridIndex occupied = _grid.GetUnclampedGridLocationFromPos(other.transform.position);
-                if (occupied != start && Inside(occupied, halfSize))
+                Vector3 otherPosition = other.transform.position;
+                GridIndex occupied = _grid.GetUnclampedGridLocationFromPos(otherPosition);
+                if (!includeAvoidanceRadius || _chefAvoidanceRadius <= 0f)
                 {
-                    _dynamicBlockedCells.Add(occupied);
+                    if (occupied != start && Inside(occupied, halfSize))
+                    {
+                        _dynamicBlockedCells.Add(occupied);
+                    }
+                    continue;
+                }
+
+                int cellRadius = Mathf.CeilToInt(_chefAvoidanceRadius) + 1;
+                float radiusSquared = _chefAvoidanceRadius * _chefAvoidanceRadius;
+                for (int x = occupied.X - cellRadius; x <= occupied.X + cellRadius; x++)
+                {
+                    for (int z = occupied.Z - cellRadius; z <= occupied.Z + cellRadius; z++)
+                    {
+                        GridIndex candidate = new GridIndex(x, start.Y, z);
+                        if (candidate == start || !Inside(candidate, halfSize))
+                        {
+                            continue;
+                        }
+
+                        Vector3 candidatePosition = _grid.GetPosFromGridLocation(candidate);
+                        if (Flatten(candidatePosition - otherPosition).sqrMagnitude <= radiusSquared)
+                        {
+                            _dynamicBlockedCells.Add(candidate);
+                        }
+                    }
                 }
             }
         }
@@ -895,6 +969,34 @@ namespace Overcooked2DishwasherBot
             _brakingPathCursor = -1;
             Status = "physical obstacle rejected current path edge";
             return true;
+        }
+
+        private void BlockCurrentRouteEdge(PlayerControls player)
+        {
+            if (_grid == null || _pathCursor < 0 || _pathCursor >= _worldPath.Count)
+            {
+                return;
+            }
+
+            GridIndex from = _grid.GetUnclampedGridLocationFromPos(player.transform.position);
+            GridIndex to = _grid.GetUnclampedGridLocationFromPos(_worldPath[_pathCursor]);
+            if (from == to && _pathCursor + 1 < _worldPath.Count)
+            {
+                to = _grid.GetUnclampedGridLocationFromPos(_worldPath[_pathCursor + 1]);
+            }
+
+            if (from != to)
+            {
+                _blockedPathEdges.Add(new GridEdge(from, to));
+                _blockedPathEdges.Add(new GridEdge(to, from));
+            }
+            else if (_hasCurrentGoal)
+            {
+                // The blocked point is the interaction goal itself rather than an edge.
+                // Try another side of the target on the next plan.
+                _rejectedInteractionCells.Add(_currentGoal);
+                _hasCurrentGoal = false;
+            }
         }
 
         private static bool Inside(GridIndex index, Point3 halfSize)

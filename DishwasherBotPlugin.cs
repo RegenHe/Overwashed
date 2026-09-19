@@ -14,7 +14,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overcooked 2 Dishwasher Bot";
-        public const string PluginVersion = "1.4.1";
+        public const string PluginVersion = "1.4.2";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -564,6 +564,10 @@ namespace Overcooked2DishwasherBot
             SetMove(Vector3.zero);
 
             GameObject carried = _carrier.InspectCarriedItem();
+            float chefAvoidanceRadius = _autoAvoidance != null && _autoAvoidance.Value
+                ? Mathf.Clamp(_avoidanceDistance.Value, 0.5f, 4f)
+                : 0f;
+            _navigator.SetChefAvoidanceRadius(chefAvoidanceRadius);
             bool carryingDirtyPlates = carried != null && carried.GetComponent<DirtyPlateStack>() != null;
             bool carryingPlate = carried != null && carried.GetComponent<ClientPlate>() != null;
             if (carried != null && !carryingDirtyPlates && (!carryingPlate || !_autoServeReadyOrders.Value))
@@ -1103,12 +1107,18 @@ namespace Overcooked2DishwasherBot
             }
 
             SetState(BotState.AvoidingPlayers);
-            bool hasEscapePath;
+            bool reachedAvoidanceGoal;
             Vector3 direction = _navigator.DirectionAwayFrom(
                 _player,
                 _avoidanceThreats,
                 releaseDistance,
-                out hasEscapePath);
+                out reachedAvoidanceGoal);
+            if (reachedAvoidanceGoal)
+            {
+                StopAvoidingPlayers();
+                SetMove(Vector3.zero);
+                return false;
+            }
             SetMove(direction);
             return true;
         }
