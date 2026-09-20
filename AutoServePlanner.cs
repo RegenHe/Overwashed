@@ -36,20 +36,38 @@ namespace Overcooked2DishwasherBot
 
         private readonly List<RecipeList.Entry> _orders = new List<RecipeList.Entry>();
         private readonly HashSet<int> _heldObjects = new HashSet<int>();
+        private readonly List<MonoBehaviour> _orderDefinitionCache = new List<MonoBehaviour>();
         private static readonly ClientPlate[] NoPlates = new ClientPlate[0];
         private static readonly MonoBehaviour[] NoBehaviours = new MonoBehaviour[0];
+        private static readonly ClientPlateStation[] NoServingStations = new ClientPlateStation[0];
+        private static readonly ClientPlayerAttachmentCarrier[] NoCarriers = new ClientPlayerAttachmentCarrier[0];
         private ClientKitchenFlowControllerBase _flow;
+        private ClientPlate[] _cachedPlates = NoPlates;
+        private ClientPlateStation[] _cachedServingStations = NoServingStations;
+        private ClientPlayerAttachmentCarrier[] _cachedCarriers = NoCarriers;
         private ClientPlate[] _planningPlates = NoPlates;
-        private MonoBehaviour[] _planningBehaviours = NoBehaviours;
+        private IList<MonoBehaviour> _planningBehaviours = NoBehaviours;
         private ClientPlayerAttachmentCarrier _planningCarrier;
         private bool _planningSnapshotActive;
         private bool _planningBehavioursLoaded;
+        private float _nextPlateRefreshTime;
+        private float _nextServingStationRefreshTime;
+        private float _nextCarrierRefreshTime;
+        private float _nextOrderDefinitionRefreshTime;
 
         internal void Clear()
         {
             _orders.Clear();
             _heldObjects.Clear();
+            _orderDefinitionCache.Clear();
             _flow = null;
+            _cachedPlates = NoPlates;
+            _cachedServingStations = NoServingStations;
+            _cachedCarriers = NoCarriers;
+            _nextPlateRefreshTime = 0f;
+            _nextServingStationRefreshTime = 0f;
+            _nextCarrierRefreshTime = 0f;
+            _nextOrderDefinitionRefreshTime = 0f;
             EndPlanningSnapshot();
         }
 
@@ -269,7 +287,7 @@ namespace Overcooked2DishwasherBot
                 : player.GetComponent<ClientPlayerAttachmentCarrier>();
             ClientPlate[] plates = _planningSnapshotActive
                 ? _planningPlates
-                : UnityEngine.Object.FindObjectsOfType<ClientPlate>();
+                : GetPlateSnapshot();
             for (int i = 0; i < plates.Length; i++)
             {
                 ClientPlate plate = plates[i];
@@ -301,7 +319,7 @@ namespace Overcooked2DishwasherBot
                 : player.GetComponent<ClientPlayerAttachmentCarrier>();
             ClientPlate[] plates = _planningSnapshotActive
                 ? _planningPlates
-                : UnityEngine.Object.FindObjectsOfType<ClientPlate>();
+                : GetPlateSnapshot();
             for (int i = 0; i < plates.Length; i++)
             {
                 ClientPlate plate = plates[i];
@@ -335,10 +353,17 @@ namespace Overcooked2DishwasherBot
             {
                 EnsurePlanningBehaviourSnapshot();
             }
-            MonoBehaviour[] behaviours = _planningSnapshotActive
-                ? _planningBehaviours
-                : UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
-            for (int i = 0; i < behaviours.Length; i++)
+            IList<MonoBehaviour> behaviours;
+            if (_planningSnapshotActive)
+            {
+                behaviours = _planningBehaviours;
+            }
+            else
+            {
+                RefreshOrderDefinitionCache();
+                behaviours = _orderDefinitionCache;
+            }
+            for (int i = 0; i < behaviours.Count; i++)
             {
                 MonoBehaviour behaviour = behaviours[i];
                 IClientOrderDefinition definition = behaviour as IClientOrderDefinition;
@@ -436,12 +461,12 @@ namespace Overcooked2DishwasherBot
             return AssembledDefinitionNode.Matching(composition, order.m_order);
         }
 
-        private static ClientPlateStation FindNearestServingStation(PlayerControls player)
+        private ClientPlateStation FindNearestServingStation(PlayerControls player)
         {
             ClientPlateStation best = null;
             float bestDistance = float.PositiveInfinity;
             TeamID team = player.PlayerIDProvider.GetTeam();
-            ClientPlateStation[] stations = UnityEngine.Object.FindObjectsOfType<ClientPlateStation>();
+            ClientPlateStation[] stations = GetServingStationSnapshot();
             for (int i = 0; i < stations.Length; i++)
             {
                 ClientPlateStation station = stations[i];
@@ -468,9 +493,13 @@ namespace Overcooked2DishwasherBot
         private void RefreshHeldObjects()
         {
             _heldObjects.Clear();
-            ClientPlayerAttachmentCarrier[] carriers = UnityEngine.Object.FindObjectsOfType<ClientPlayerAttachmentCarrier>();
+            ClientPlayerAttachmentCarrier[] carriers = GetCarrierSnapshot();
             for (int i = 0; i < carriers.Length; i++)
             {
+                if (carriers[i] == null)
+                {
+                    continue;
+                }
                 GameObject item = carriers[i].InspectCarriedItem();
                 if (item != null)
                 {
@@ -485,7 +514,7 @@ namespace Overcooked2DishwasherBot
             _planningCarrier = player == null
                 ? null
                 : player.GetComponent<ClientPlayerAttachmentCarrier>();
-            _planningPlates = UnityEngine.Object.FindObjectsOfType<ClientPlate>();
+            _planningPlates = GetPlateSnapshot();
             _planningBehaviours = NoBehaviours;
             _planningBehavioursLoaded = false;
         }
@@ -494,7 +523,8 @@ namespace Overcooked2DishwasherBot
         {
             if (_planningSnapshotActive && !_planningBehavioursLoaded)
             {
-                _planningBehaviours = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
+                RefreshOrderDefinitionCache();
+                _planningBehaviours = _orderDefinitionCache;
                 _planningBehavioursLoaded = true;
             }
         }
@@ -506,6 +536,75 @@ namespace Overcooked2DishwasherBot
             _planningPlates = NoPlates;
             _planningBehaviours = NoBehaviours;
             _planningBehavioursLoaded = false;
+        }
+
+        private ClientPlate[] GetPlateSnapshot()
+        {
+            if (Time.unscaledTime >= _nextPlateRefreshTime)
+            {
+                _cachedPlates = UnityEngine.Object.FindObjectsOfType<ClientPlate>();
+                _nextPlateRefreshTime = Time.unscaledTime + 0.35f;
+            }
+            return _cachedPlates ?? NoPlates;
+        }
+
+        private ClientPlateStation[] GetServingStationSnapshot()
+        {
+            if (Time.unscaledTime >= _nextServingStationRefreshTime)
+            {
+                _cachedServingStations = UnityEngine.Object.FindObjectsOfType<ClientPlateStation>();
+                _nextServingStationRefreshTime = Time.unscaledTime + 2f;
+            }
+            return _cachedServingStations ?? NoServingStations;
+        }
+
+        private ClientPlayerAttachmentCarrier[] GetCarrierSnapshot()
+        {
+            if (Time.unscaledTime >= _nextCarrierRefreshTime)
+            {
+                _cachedCarriers = UnityEngine.Object.FindObjectsOfType<ClientPlayerAttachmentCarrier>();
+                _nextCarrierRefreshTime = Time.unscaledTime + 1f;
+            }
+            return _cachedCarriers ?? NoCarriers;
+        }
+
+        private void RefreshOrderDefinitionCache()
+        {
+            if (Time.unscaledTime < _nextOrderDefinitionRefreshTime)
+            {
+                return;
+            }
+
+            _orderDefinitionCache.Clear();
+            AddOrderDefinitions<ClientCookableContainer>();
+            AddOrderDefinitions<ClientPreparationContainer>();
+            AddOrderDefinitions<ClientItemContainer>();
+            AddOrderDefinitions<ClientLadleContainer>();
+            AddOrderDefinitions<ClientMixableContainer>();
+            ClientPlate[] plates = GetPlateSnapshot();
+            for (int i = 0; i < plates.Length; i++)
+            {
+                if (plates[i] != null)
+                {
+                    _orderDefinitionCache.Add(plates[i]);
+                }
+            }
+            AddOrderDefinitions<AssignableOrderDefinition>();
+            AddOrderDefinitions<IngredientPropertiesComponent>();
+            AddOrderDefinitions<ItemPropertiesComponent>();
+            _nextOrderDefinitionRefreshTime = Time.unscaledTime + 0.75f;
+        }
+
+        private void AddOrderDefinitions<T>() where T : MonoBehaviour, IClientOrderDefinition
+        {
+            T[] components = UnityEngine.Object.FindObjectsOfType<T>();
+            for (int i = 0; i < components.Length; i++)
+            {
+                if (components[i] != null)
+                {
+                    _orderDefinitionCache.Add(components[i]);
+                }
+            }
         }
 
         private bool TryGetActiveOrders(

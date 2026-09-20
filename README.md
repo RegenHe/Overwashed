@@ -2,7 +2,14 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.5.3**.
+Current version: **1.5.4**.
+
+### 1.5.4 fast-mode frame-time optimisation
+
+- Separates the `0.1`-second fast interaction/retry timing from expensive Unity scene discovery and recipe-plan rebuilding, so Fast mode keeps its pickup and placement response without rebuilding an absent serving plan ten times per second.
+- Caches dirty stacks, sinks, plates, serving stations, and player carriers at type-appropriate refresh rates. Cache entries are still validated before use and all caches are cleared on toggle and scene changes.
+- Replaces the broad `FindObjectsOfType<MonoBehaviour>()` serving scan with the nine confirmed `IClientOrderDefinition` component types from the installed game assembly, then caches only those small candidate sets.
+- Keeps newly spawned food responsive with short bounded refresh windows while substantially reducing allocations and main-thread scan spikes on lower-spec computers.
 
 ### 1.5.3 remote-client serving synchronisation
 

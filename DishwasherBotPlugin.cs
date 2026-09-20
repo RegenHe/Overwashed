@@ -15,7 +15,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overwashed";
-        public const string PluginVersion = "1.5.3";
+        public const string PluginVersion = "1.5.4";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -29,6 +29,8 @@ namespace Overcooked2DishwasherBot
         private readonly HashSet<string> _reportedErrors = new HashSet<string>();
         private readonly List<Vector3> _avoidanceThreats = new List<Vector3>();
         private static readonly PlayerControls[] NoPlayers = new PlayerControls[0];
+        private static readonly ClientDirtyPlateStack[] NoDirtyPlateStacks = new ClientDirtyPlateStack[0];
+        private static readonly ClientWashingStation[] NoWashingStations = new ClientWashingStation[0];
 
         private ManualLogSource _log;
         private ConfigEntry<bool> _autoAvoidance;
@@ -69,8 +71,12 @@ namespace Overcooked2DishwasherBot
         private float _servePendingUntil;
         private float _nextPlayerSnapshotTime;
         private float _nextRoundTimeCheck;
+        private float _nextDirtyObjectRefreshTime;
+        private float _nextSinkObjectRefreshTime;
         private float _lastRoundRemaining = -1f;
         private PlayerControls[] _playerSnapshot = NoPlayers;
+        private ClientDirtyPlateStack[] _dirtyStackSnapshot = NoDirtyPlateStacks;
+        private ClientWashingStation[] _sinkSnapshot = NoWashingStations;
         private int _droppingItemId;
         private int _lastCarriedItemId;
         private int _deliveringItemId;
@@ -120,6 +126,14 @@ namespace Overcooked2DishwasherBot
         private float ScanInterval
         {
             get { return FastModeEnabled ? 0.1f : 0.5f; }
+        }
+
+        private float ServingPlanScanInterval
+        {
+            // Recipe matching can inspect every candidate meal and active order. Keep
+            // action retries at 0.1s in Fast mode, but do not rebuild an absent plan ten
+            // times per second while the kitchen is idle.
+            get { return FastModeEnabled ? 0.25f : 0.5f; }
         }
 
         private float InteractionRetryInterval
@@ -257,6 +271,7 @@ namespace Overcooked2DishwasherBot
             _nextRoundTimeCheck = 0f;
             _roundTimeReader.Clear();
             _servePlanner.Clear();
+            ClearWorldObjectSnapshots();
             _lastCarriedItemId = 0;
             ResetRemoteServingPreparation();
             _dirtyTarget = null;
@@ -531,6 +546,7 @@ namespace Overcooked2DishwasherBot
             _nextPlayerSnapshotTime = 0f;
             _nextRoundTimeCheck = 0f;
             _playerSnapshot = NoPlayers;
+            ClearWorldObjectSnapshots();
             _droppingItemId = 0;
             _lastCarriedItemId = 0;
             _deliveringItemId = 0;
@@ -929,7 +945,7 @@ namespace Overcooked2DishwasherBot
             {
                 return false;
             }
-            _nextServeScanTime = Time.time + ScanInterval;
+            _nextServeScanTime = Time.time + ServingPlanScanInterval;
 
             AutoServePlan plan;
             string planningError;
@@ -1706,7 +1722,7 @@ namespace Overcooked2DishwasherBot
 
         private ClientDirtyPlateStack FindNearestDirtyStack()
         {
-            ClientDirtyPlateStack[] stacks = FindObjectsOfType<ClientDirtyPlateStack>();
+            ClientDirtyPlateStack[] stacks = GetDirtyStackSnapshot();
             ClientDirtyPlateStack nearest = null;
             float bestDistance = float.PositiveInfinity;
             for (int i = 0; i < stacks.Length; i++)
@@ -1729,7 +1745,7 @@ namespace Overcooked2DishwasherBot
 
         private ClientWashingStation FindNearestSink()
         {
-            ClientWashingStation[] sinks = FindObjectsOfType<ClientWashingStation>();
+            ClientWashingStation[] sinks = GetSinkSnapshot();
             ClientWashingStation nearest = null;
             float bestDistance = float.PositiveInfinity;
             for (int i = 0; i < sinks.Length; i++)
@@ -1760,7 +1776,7 @@ namespace Overcooked2DishwasherBot
 
         private ClientWashingStation FindSinkWithDirtyPlates()
         {
-            ClientWashingStation[] sinks = FindObjectsOfType<ClientWashingStation>();
+            ClientWashingStation[] sinks = GetSinkSnapshot();
             ClientWashingStation nearest = null;
             float bestDistance = float.PositiveInfinity;
             for (int i = 0; i < sinks.Length; i++)
@@ -1778,6 +1794,34 @@ namespace Overcooked2DishwasherBot
                 }
             }
             return nearest;
+        }
+
+        private ClientDirtyPlateStack[] GetDirtyStackSnapshot()
+        {
+            if (Time.unscaledTime >= _nextDirtyObjectRefreshTime)
+            {
+                _dirtyStackSnapshot = FindObjectsOfType<ClientDirtyPlateStack>();
+                _nextDirtyObjectRefreshTime = Time.unscaledTime + 0.5f;
+            }
+            return _dirtyStackSnapshot ?? NoDirtyPlateStacks;
+        }
+
+        private ClientWashingStation[] GetSinkSnapshot()
+        {
+            if (Time.unscaledTime >= _nextSinkObjectRefreshTime)
+            {
+                _sinkSnapshot = FindObjectsOfType<ClientWashingStation>();
+                _nextSinkObjectRefreshTime = Time.unscaledTime + 1.5f;
+            }
+            return _sinkSnapshot ?? NoWashingStations;
+        }
+
+        private void ClearWorldObjectSnapshots()
+        {
+            _dirtyStackSnapshot = NoDirtyPlateStacks;
+            _sinkSnapshot = NoWashingStations;
+            _nextDirtyObjectRefreshTime = 0f;
+            _nextSinkObjectRefreshTime = 0f;
         }
 
         private static bool IsUsableDirtyTarget(ClientDirtyPlateStack stack)
@@ -1935,6 +1979,7 @@ namespace Overcooked2DishwasherBot
             _avoidanceThreats.Clear();
             _nextPlayerSnapshotTime = 0f;
             _playerSnapshot = NoPlayers;
+            ClearWorldObjectSnapshots();
             _lastCarriedItemId = 0;
             ResetServingPlan(false);
             _servePlanner.Clear();

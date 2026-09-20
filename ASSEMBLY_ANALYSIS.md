@@ -51,3 +51,7 @@ Verified against the local `Assembly-CSharp.dll` for 1.5.3:
 - `PlayerControls.UpdateNearbyObjects()` is public and rebuilds pickup and placement handlers from the chef's current transform through `FindNearbyObjects()`.
 - `ClientInputTransmitter.UpdateSynchronising()` sends controller state only when it differs from the previous state or private `m_bForceSend` is set. The transmitted state includes the chef transform rotation.
 - Therefore, rotating the client chef after its normal interaction scan can pair an action with a stale local target or stale host rotation. The Mod now refreshes the scan and explicitly sends a stabilisation state before a remote serving action.
+
+## Order-definition component discovery
+
+The installed assembly has nine concrete direct implementers of `IClientOrderDefinition`: `ClientCookableContainer`, `ClientPreparationContainer`, `ClientItemContainer`, `ClientLadleContainer`, `ClientMixableContainer`, `ClientPlate`, `AssignableOrderDefinition`, `IngredientPropertiesComponent`, and `ItemPropertiesComponent`. Automatic serving scans these confirmed component types instead of every active `MonoBehaviour` in the scene.
