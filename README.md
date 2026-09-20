@@ -2,7 +2,15 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.4.4**.
+Current version: **1.5.0**.
+
+### 1.5.0 nearest drop-off refresh and late-round order release
+
+- Immediately selects the nearest usable washing station when a dirty stack actually enters the bot's hands, rather than retaining the sink used by the previous task.
+- Re-selects the nearest team serving station when a carried plate first becomes ready for delivery. Serving stations are no longer rejected merely because their local `GridManager` differs from the chef's, matching the connected-kitchen navigation model.
+- Adds `Disable order near round end`, disabled by default, plus an inclusive `0`–`120` second cutoff slider.
+- While automatic serving is active, reaching the configured remaining time visibly switches the existing `Serve in order` setting off. Its pre-override value is restored when the round ends, either serving feature is disabled, the bot is disabled, or the plugin unloads.
+- Reads the client round timer directly: normal timed levels use the level time limit minus elapsed time, while modifiable survival timers expose their countdown value directly.
 
 ### 1.4.4 Overwashed rename
 

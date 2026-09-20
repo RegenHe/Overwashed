@@ -14,7 +14,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overwashed";
-        public const string PluginVersion = "1.4.4";
+        public const string PluginVersion = "1.5.0";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -24,6 +24,7 @@ namespace Overcooked2DishwasherBot
 
         private readonly GridPathNavigator _navigator = new GridPathNavigator();
         private readonly AutoServePlanner _servePlanner = new AutoServePlanner();
+        private readonly RoundTimeReader _roundTimeReader = new RoundTimeReader();
         private readonly HashSet<string> _reportedErrors = new HashSet<string>();
         private readonly List<Vector3> _avoidanceThreats = new List<Vector3>();
         private static readonly PlayerControls[] NoPlayers = new PlayerControls[0];
@@ -33,11 +34,16 @@ namespace Overcooked2DishwasherBot
         private ConfigEntry<float> _avoidanceDistance;
         private ConfigEntry<bool> _autoServeReadyOrders;
         private ConfigEntry<bool> _serveInOrder;
+        private ConfigEntry<bool> _disableServeInOrderNearEnd;
+        private ConfigEntry<int> _serveInOrderCutoffSeconds;
         private ConfigEntry<bool> _fastMode;
         private ConfigEntry<bool> _extremeMode;
         private bool _enabled;
         private bool _showSettings;
         private bool _avoidingPlayers;
+        private bool _roundObservedActive;
+        private bool _serveOrderAutoChanged;
+        private bool _serveInOrderBeforeAutoChange;
         private PlayerControls _player;
         private ClientPlayerAttachmentCarrier _carrier;
         private BotInputBinding _input;
@@ -61,8 +67,11 @@ namespace Overcooked2DishwasherBot
         private float _nextServeScanTime;
         private float _servePendingUntil;
         private float _nextPlayerSnapshotTime;
+        private float _nextRoundTimeCheck;
         private PlayerControls[] _playerSnapshot = NoPlayers;
         private int _droppingItemId;
+        private int _lastCarriedItemId;
+        private int _deliveringItemId;
         private GameObject _lastDirtyInteractionTarget;
         private Texture2D _statusBackground;
         private Texture2D _statusIcon;
@@ -138,6 +147,18 @@ namespace Overcooked2DishwasherBot
                 "ServeInOrder",
                 true,
                 "Only serve the oldest active order. Disable to serve any matching active order.");
+            _disableServeInOrderNearEnd = Config.Bind(
+                "Serving",
+                "DisableServeInOrderNearEnd",
+                false,
+                "Temporarily disable ordered serving near the end of a timed round.");
+            _serveInOrderCutoffSeconds = Config.Bind(
+                "Serving",
+                "ServeInOrderCutoffSeconds",
+                30,
+                new ConfigDescription(
+                    "Remaining seconds at which ordered serving is temporarily disabled.",
+                    new AcceptableValueRange<int>(0, 120)));
             _fastMode = Config.Bind(
                 "Speed",
                 "FastMode",
@@ -169,6 +190,7 @@ namespace Overcooked2DishwasherBot
                     return;
                 }
 
+                UpdateServeOrderForRoundTime();
                 if (!EnsureKeyboardPlayer())
                 {
                     ReleaseRobotInputs(false);
@@ -191,11 +213,13 @@ namespace Overcooked2DishwasherBot
 
         private void OnDisable()
         {
+            RestoreServeOrderOverride();
             ShutdownBinding();
         }
 
         private void OnDestroy()
         {
+            RestoreServeOrderOverride();
             ShutdownBinding();
             DestroyStatusBadgeTextures();
         }
@@ -237,7 +261,7 @@ namespace Overcooked2DishwasherBot
         private void DrawSettingsPanel()
         {
             const float width = 286f;
-            const float height = 258f;
+            const float height = 342f;
             float left = Mathf.Max(8f, Screen.width - width - 12f);
             Rect panel = new Rect(left, 52f, width, height);
 
@@ -292,8 +316,36 @@ namespace Overcooked2DishwasherBot
                 ResetServingPlan(true);
             }
 
-            bool fastMode = GUI.Toggle(
+            bool disableOrderNearEnd = GUI.Toggle(
                 new Rect(panel.x + 16f, panel.y + 162f, panel.width - 32f, 22f),
+                _disableServeInOrderNearEnd.Value,
+                "Disable order near round end");
+            if (disableOrderNearEnd != _disableServeInOrderNearEnd.Value)
+            {
+                _disableServeInOrderNearEnd.Value = disableOrderNearEnd;
+                _nextRoundTimeCheck = 0f;
+                if (!disableOrderNearEnd)
+                {
+                    RestoreServeOrderOverride();
+                }
+            }
+
+            GUI.Label(
+                new Rect(panel.x + 16f, panel.y + 188f, panel.width - 32f, 22f),
+                "Order cutoff: " + _serveInOrderCutoffSeconds.Value + " seconds");
+            int cutoffSeconds = Mathf.RoundToInt(GUI.HorizontalSlider(
+                new Rect(panel.x + 18f, panel.y + 214f, panel.width - 36f, 18f),
+                _serveInOrderCutoffSeconds.Value,
+                0f,
+                120f));
+            if (cutoffSeconds != _serveInOrderCutoffSeconds.Value)
+            {
+                _serveInOrderCutoffSeconds.Value = cutoffSeconds;
+                _nextRoundTimeCheck = 0f;
+            }
+
+            bool fastMode = GUI.Toggle(
+                new Rect(panel.x + 16f, panel.y + 240f, panel.width - 32f, 22f),
                 _fastMode.Value,
                 "Fast interactions");
             if (fastMode != _fastMode.Value)
@@ -309,7 +361,7 @@ namespace Overcooked2DishwasherBot
             }
 
             bool extremeMode = GUI.Toggle(
-                new Rect(panel.x + 16f, panel.y + 188f, panel.width - 32f, 22f),
+                new Rect(panel.x + 16f, panel.y + 266f, panel.width - 32f, 22f),
                 _extremeMode.Value,
                 "Extreme dash mode");
             if (extremeMode != _extremeMode.Value)
@@ -324,7 +376,7 @@ namespace Overcooked2DishwasherBot
             }
 
             GUI.Label(
-                new Rect(panel.x + 16f, panel.y + 226f, panel.width - 32f, 22f),
+                new Rect(panel.x + 16f, panel.y + 310f, panel.width - 32f, 22f),
                 "Click the bot icon to close settings");
         }
 
@@ -414,6 +466,10 @@ namespace Overcooked2DishwasherBot
 
         private void SetBotEnabled(bool enabled)
         {
+            if (!enabled)
+            {
+                RestoreServeOrderOverride();
+            }
             _enabled = enabled;
             _navigator.Clear();
             _dirtyTarget = null;
@@ -432,18 +488,25 @@ namespace Overcooked2DishwasherBot
             _nextServeScanTime = 0f;
             _servePendingUntil = 0f;
             _nextPlayerSnapshotTime = 0f;
+            _nextRoundTimeCheck = 0f;
             _playerSnapshot = NoPlayers;
             _droppingItemId = 0;
+            _lastCarriedItemId = 0;
+            _deliveringItemId = 0;
             _lastDirtyInteractionTarget = null;
             _avoidingPlayers = false;
             _avoidanceThreats.Clear();
             _servePlan = null;
             _servePhase = ServePhase.None;
+            _roundObservedActive = false;
+            _serveOrderAutoChanged = false;
+            _serveInOrderBeforeAutoChange = _serveInOrder.Value;
+            _roundTimeReader.Clear();
 
             if (enabled)
             {
                 SetState(BotState.FindingPlayer);
-                _log.LogInfo("Dishwasher bot ENABLED. Searching for a locally controlled keyboard chef.");
+                _log.LogInfo("Overwashed ENABLED. Searching for a locally controlled keyboard chef.");
             }
             else
             {
@@ -452,7 +515,7 @@ namespace Overcooked2DishwasherBot
                 EndCurrentInteraction();
                 ShutdownBinding();
                 SetState(BotState.Disabled);
-                _log.LogInfo("Dishwasher bot DISABLED. All robot input was released.");
+                _log.LogInfo("Overwashed DISABLED. All robot input was released.");
             }
         }
 
@@ -579,6 +642,9 @@ namespace Overcooked2DishwasherBot
             SetMove(Vector3.zero);
 
             GameObject carried = _carrier.InspectCarriedItem();
+            int carriedItemId = carried == null ? 0 : carried.GetInstanceID();
+            bool acquiredNewItem = carriedItemId != 0 && carriedItemId != _lastCarriedItemId;
+            _lastCarriedItemId = carriedItemId;
             PlayerControls[] players = GetPlayerSnapshot(false);
             _navigator.SetPlayerSnapshot(players);
             float chefAvoidanceRadius = _autoAvoidance != null && _autoAvoidance.Value
@@ -587,6 +653,10 @@ namespace Overcooked2DishwasherBot
             _navigator.SetChefAvoidanceRadius(chefAvoidanceRadius);
             bool carryingDirtyPlates = carried != null && carried.GetComponent<DirtyPlateStack>() != null;
             bool carryingPlate = carried != null && carried.GetComponent<ClientPlate>() != null;
+            if (acquiredNewItem && carryingDirtyPlates)
+            {
+                SelectNearestSinkForCarriedPlates();
+            }
             if (carried != null && !carryingDirtyPlates && (!carryingPlate || !_autoServeReadyOrders.Value))
             {
                 DropUnexpectedItem(carried);
@@ -694,7 +764,10 @@ namespace Overcooked2DishwasherBot
             ClientPlate carriedPlate = carried == null ? null : carried.GetComponent<ClientPlate>();
             if (carriedPlate != null)
             {
-                if (_servePhase == ServePhase.Delivering && Time.time < _servePendingUntil)
+                int carriedPlateId = carriedPlate.gameObject.GetInstanceID();
+                if (_servePhase == ServePhase.Delivering
+                    && _deliveringItemId == carriedPlateId
+                    && Time.time < _servePendingUntil)
                 {
                     SetState(BotState.ServingMeal);
                     return true;
@@ -709,18 +782,28 @@ namespace Overcooked2DishwasherBot
                     out matchingOrder,
                     out error))
                 {
+                    bool enteringDelivery = _servePhase != ServePhase.Delivering
+                        || _deliveringItemId != carriedPlateId
+                        || _servePlan == null
+                        || _servePlan.Order != matchingOrder;
                     if (_servePlan == null || _servePlan.Order != matchingOrder)
                     {
                         _servePlan = new AutoServePlan
                         {
                             Order = matchingOrder,
-                            ReadyPlate = carriedPlate,
-                            ServingStation = _servePlanner.FindServingStation(_player)
+                            ReadyPlate = carriedPlate
                         };
                     }
-                    else if (_servePlan.ServingStation == null)
+                    else
+                    {
+                        _servePlan.ReadyPlate = carriedPlate;
+                    }
+
+                    if (enteringDelivery || _servePlan.ServingStation == null)
                     {
                         _servePlan.ServingStation = _servePlanner.FindServingStation(_player);
+                        _serveInteractionCellSince = 0f;
+                        _navigator.Clear();
                     }
 
                     if (_servePlan.ServingStation == null)
@@ -729,6 +812,7 @@ namespace Overcooked2DishwasherBot
                         return false;
                     }
 
+                    _deliveringItemId = carriedPlateId;
                     _servePhase = ServePhase.Delivering;
                     MoveServingPlateToStation(_servePlan.ServingStation);
                     return true;
@@ -1046,10 +1130,85 @@ namespace Overcooked2DishwasherBot
             return behaviour != null && behaviour.enabled && behaviour.gameObject.activeInHierarchy;
         }
 
+        private void UpdateServeOrderForRoundTime()
+        {
+            bool featureActive = _disableServeInOrderNearEnd != null
+                && _disableServeInOrderNearEnd.Value
+                && _autoServeReadyOrders != null
+                && _autoServeReadyOrders.Value;
+            if (!featureActive && !_serveOrderAutoChanged)
+            {
+                _roundObservedActive = false;
+                return;
+            }
+            if (Time.unscaledTime < _nextRoundTimeCheck)
+            {
+                return;
+            }
+            _nextRoundTimeCheck = Time.unscaledTime + 0.25f;
+
+            bool inRound;
+            float remainingSeconds;
+            bool timeAvailable = _roundTimeReader.TryRead(out inRound, out remainingSeconds);
+            if (!inRound)
+            {
+                if (_roundObservedActive)
+                {
+                    RestoreServeOrderOverride();
+                }
+                _roundObservedActive = false;
+                return;
+            }
+
+            if (!_roundObservedActive)
+            {
+                _roundObservedActive = true;
+                _serveOrderAutoChanged = false;
+            }
+
+            if (!featureActive)
+            {
+                RestoreServeOrderOverride();
+                return;
+            }
+            if (!timeAvailable || _serveOrderAutoChanged || !_serveInOrder.Value)
+            {
+                return;
+            }
+
+            int cutoff = Mathf.Clamp(_serveInOrderCutoffSeconds.Value, 0, 120);
+            if (remainingSeconds > cutoff)
+            {
+                return;
+            }
+
+            _serveInOrderBeforeAutoChange = _serveInOrder.Value;
+            _serveOrderAutoChanged = true;
+            _serveInOrder.Value = false;
+            ResetServingPlan(true);
+        }
+
+        private void RestoreServeOrderOverride()
+        {
+            if (!_serveOrderAutoChanged)
+            {
+                return;
+            }
+
+            bool restoreValue = _serveInOrderBeforeAutoChange;
+            _serveOrderAutoChanged = false;
+            if (_serveInOrder != null && _serveInOrder.Value != restoreValue)
+            {
+                _serveInOrder.Value = restoreValue;
+                ResetServingPlan(true);
+            }
+        }
+
         private void ResetServingPlan(bool clearNavigator)
         {
             _servePlan = null;
             _servePhase = ServePhase.None;
+            _deliveringItemId = 0;
             _servePendingUntil = 0f;
             _serveInteractionCellSince = 0f;
             _nextServeScanTime = 0f;
@@ -1442,6 +1601,15 @@ namespace Overcooked2DishwasherBot
             return nearest;
         }
 
+        private void SelectNearestSinkForCarriedPlates()
+        {
+            _sinkTarget = FindNearestSink();
+            _sinkInteractionCellSince = 0f;
+            _placementPendingUntil = 0f;
+            _nextSinkScanTime = _sinkTarget == null ? 0f : Time.time + ScanInterval;
+            _navigator.Clear();
+        }
+
         private ClientWashingStation FindSinkWithDirtyPlates()
         {
             ClientWashingStation[] sinks = FindObjectsOfType<ClientWashingStation>();
@@ -1612,6 +1780,7 @@ namespace Overcooked2DishwasherBot
             _avoidanceThreats.Clear();
             _nextPlayerSnapshotTime = 0f;
             _playerSnapshot = NoPlayers;
+            _lastCarriedItemId = 0;
             ResetServingPlan(false);
             ReleaseRobotInputs(true);
             _navigator.Clear();

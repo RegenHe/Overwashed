@@ -402,7 +402,6 @@ namespace Overcooked2DishwasherBot
             ClientPlateStation best = null;
             float bestDistance = float.PositiveInfinity;
             TeamID team = player.PlayerIDProvider.GetTeam();
-            GridManager playerGrid = GameUtils.GetGridManager(player.transform);
             ClientPlateStation[] stations = UnityEngine.Object.FindObjectsOfType<ClientPlateStation>();
             for (int i = 0; i < stations.Length; i++)
             {
@@ -413,12 +412,6 @@ namespace Overcooked2DishwasherBot
                     || !station.gameObject.activeInHierarchy
                     || stationData == null
                     || stationData.m_teamId != team)
-                {
-                    continue;
-                }
-
-                GridManager stationGrid = GameUtils.GetGridManager(station.transform);
-                if (playerGrid != null && stationGrid != null && playerGrid != stationGrid)
                 {
                     continue;
                 }
