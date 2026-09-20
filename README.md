@@ -2,7 +2,15 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.5.1**.
+Current version: **1.5.2**.
+
+### 1.5.2 release performance pass
+
+- Reuses path-search queues, dictionaries, visited sets, candidate goals, and result buffers across route rebuilds, reducing garbage collection during normal navigation and player avoidance without changing route rules or timing thresholds.
+- Uses preallocated physics-query buffers for ground and obstacle checks. Exceptionally dense queries automatically fall back to the original complete allocating query so collision accuracy is preserved.
+- Moves carried-item and ground-component lookup outside collision-hit loops.
+- Automatic serving now snapshots plates and order-definition behaviours once per planning pass instead of rescanning the full scene for every active order, and caches the active kitchen flow until it becomes invalid.
+- Clears all new caches on toggle and scene changes, retaining restart/exit safety and preventing references from leaking between kitchens.
 
 ### 1.5.1 abnormal round-exit recovery
 

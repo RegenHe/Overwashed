@@ -36,6 +36,22 @@ namespace Overcooked2DishwasherBot
 
         private readonly List<RecipeList.Entry> _orders = new List<RecipeList.Entry>();
         private readonly HashSet<int> _heldObjects = new HashSet<int>();
+        private static readonly ClientPlate[] NoPlates = new ClientPlate[0];
+        private static readonly MonoBehaviour[] NoBehaviours = new MonoBehaviour[0];
+        private ClientKitchenFlowControllerBase _flow;
+        private ClientPlate[] _planningPlates = NoPlates;
+        private MonoBehaviour[] _planningBehaviours = NoBehaviours;
+        private ClientPlayerAttachmentCarrier _planningCarrier;
+        private bool _planningSnapshotActive;
+        private bool _planningBehavioursLoaded;
+
+        internal void Clear()
+        {
+            _orders.Clear();
+            _heldObjects.Clear();
+            _flow = null;
+            EndPlanningSnapshot();
+        }
 
         internal bool TryBuildPlan(
             PlayerControls player,
@@ -61,50 +77,59 @@ namespace Overcooked2DishwasherBot
                 return false;
             }
 
-            RefreshHeldObjects();
-            if (serveInOrder)
+            BeginPlanningSnapshot(player);
+            try
             {
-                return TryBuildPlanForOrder(player, _orders[0], station, out plan);
-            }
-
-            AutoServePlan bestPlated = null;
-            float bestPlatedDistance = float.PositiveInfinity;
-            for (int i = 0; i < _orders.Count; i++)
-            {
-                ClientPlate readyPlate = FindNearestReadyPlate(player, _orders[i], out float readyDistance);
-                if (readyPlate != null && readyDistance < bestPlatedDistance)
+                RefreshHeldObjects();
+                if (serveInOrder)
                 {
-                    bestPlatedDistance = readyDistance;
-                    bestPlated = new AutoServePlan
+                    return TryBuildPlanForOrder(player, _orders[0], station, out plan);
+                }
+
+                AutoServePlan bestPlated = null;
+                float bestPlatedDistance = float.PositiveInfinity;
+                for (int i = 0; i < _orders.Count; i++)
+                {
+                    ClientPlate readyPlate = FindNearestReadyPlate(player, _orders[i], out float readyDistance);
+                    if (readyPlate != null && readyDistance < bestPlatedDistance)
                     {
-                        Order = _orders[i],
-                        ReadyPlate = readyPlate,
-                        ServingStation = station
-                    };
+                        bestPlatedDistance = readyDistance;
+                        bestPlated = new AutoServePlan
+                        {
+                            Order = _orders[i],
+                            ReadyPlate = readyPlate,
+                            ServingStation = station
+                        };
+                    }
                 }
-            }
-            if (bestPlated != null)
-            {
-                plan = bestPlated;
-                return true;
-            }
-
-            AutoServePlan bestUnplated = null;
-            float bestUnplatedDistance = float.PositiveInfinity;
-            for (int i = 0; i < _orders.Count; i++)
-            {
-                AutoServePlan candidate;
-                float distance;
-                if (TryBuildUnplatedPlan(player, _orders[i], station, out candidate, out distance)
-                    && distance < bestUnplatedDistance)
+                if (bestPlated != null)
                 {
-                    bestUnplatedDistance = distance;
-                    bestUnplated = candidate;
+                    plan = bestPlated;
+                    return true;
                 }
-            }
 
-            plan = bestUnplated;
-            return plan != null;
+                EnsurePlanningBehaviourSnapshot();
+                AutoServePlan bestUnplated = null;
+                float bestUnplatedDistance = float.PositiveInfinity;
+                for (int i = 0; i < _orders.Count; i++)
+                {
+                    AutoServePlan candidate;
+                    float distance;
+                    if (TryBuildUnplatedPlan(player, _orders[i], station, out candidate, out distance)
+                        && distance < bestUnplatedDistance)
+                    {
+                        bestUnplatedDistance = distance;
+                        bestUnplated = candidate;
+                    }
+                }
+
+                plan = bestUnplated;
+                return plan != null;
+            }
+            finally
+            {
+                EndPlanningSnapshot();
+            }
         }
 
         internal bool TryFindMatchingOrder(
@@ -239,8 +264,12 @@ namespace Overcooked2DishwasherBot
         {
             bestDistance = float.PositiveInfinity;
             ClientPlate best = null;
-            ClientPlayerAttachmentCarrier carrier = player.GetComponent<ClientPlayerAttachmentCarrier>();
-            ClientPlate[] plates = UnityEngine.Object.FindObjectsOfType<ClientPlate>();
+            ClientPlayerAttachmentCarrier carrier = _planningSnapshotActive
+                ? _planningCarrier
+                : player.GetComponent<ClientPlayerAttachmentCarrier>();
+            ClientPlate[] plates = _planningSnapshotActive
+                ? _planningPlates
+                : UnityEngine.Object.FindObjectsOfType<ClientPlate>();
             for (int i = 0; i < plates.Length; i++)
             {
                 ClientPlate plate = plates[i];
@@ -267,8 +296,12 @@ namespace Overcooked2DishwasherBot
         {
             bestDistance = float.PositiveInfinity;
             ClientPlate best = null;
-            ClientPlayerAttachmentCarrier carrier = player.GetComponent<ClientPlayerAttachmentCarrier>();
-            ClientPlate[] plates = UnityEngine.Object.FindObjectsOfType<ClientPlate>();
+            ClientPlayerAttachmentCarrier carrier = _planningSnapshotActive
+                ? _planningCarrier
+                : player.GetComponent<ClientPlayerAttachmentCarrier>();
+            ClientPlate[] plates = _planningSnapshotActive
+                ? _planningPlates
+                : UnityEngine.Object.FindObjectsOfType<ClientPlate>();
             for (int i = 0; i < plates.Length; i++)
             {
                 ClientPlate plate = plates[i];
@@ -298,7 +331,13 @@ namespace Overcooked2DishwasherBot
         {
             bestDistance = float.PositiveInfinity;
             GameObject best = null;
-            MonoBehaviour[] behaviours = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
+            if (_planningSnapshotActive)
+            {
+                EnsurePlanningBehaviourSnapshot();
+            }
+            MonoBehaviour[] behaviours = _planningSnapshotActive
+                ? _planningBehaviours
+                : UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
             for (int i = 0; i < behaviours.Length; i++)
             {
                 MonoBehaviour behaviour = behaviours[i];
@@ -440,7 +479,36 @@ namespace Overcooked2DishwasherBot
             }
         }
 
-        private static bool TryGetActiveOrders(
+        private void BeginPlanningSnapshot(PlayerControls player)
+        {
+            _planningSnapshotActive = true;
+            _planningCarrier = player == null
+                ? null
+                : player.GetComponent<ClientPlayerAttachmentCarrier>();
+            _planningPlates = UnityEngine.Object.FindObjectsOfType<ClientPlate>();
+            _planningBehaviours = NoBehaviours;
+            _planningBehavioursLoaded = false;
+        }
+
+        private void EnsurePlanningBehaviourSnapshot()
+        {
+            if (_planningSnapshotActive && !_planningBehavioursLoaded)
+            {
+                _planningBehaviours = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
+                _planningBehavioursLoaded = true;
+            }
+        }
+
+        private void EndPlanningSnapshot()
+        {
+            _planningSnapshotActive = false;
+            _planningCarrier = null;
+            _planningPlates = NoPlates;
+            _planningBehaviours = NoBehaviours;
+            _planningBehavioursLoaded = false;
+        }
+
+        private bool TryGetActiveOrders(
             PlayerControls player,
             List<RecipeList.Entry> output,
             out string error)
@@ -455,35 +523,22 @@ namespace Overcooked2DishwasherBot
 
             try
             {
-                ClientKitchenFlowControllerBase[] flows = UnityEngine.Object.FindObjectsOfType<ClientKitchenFlowControllerBase>();
-                for (int i = 0; i < flows.Length; i++)
+                IList activeOrders = GetActiveOrderList(player);
+                if (activeOrders == null)
                 {
-                    ClientKitchenFlowControllerBase flow = flows[i];
-                    if (flow == null || !flow.enabled || !flow.gameObject.activeInHierarchy)
-                    {
-                        continue;
-                    }
-
-                    ClientTeamMonitor monitor = flow.GetMonitorForTeam(player.PlayerIDProvider.GetTeam());
-                    ClientOrderControllerBase controller = monitor == null ? null : monitor.OrdersController;
-                    IList activeOrders = controller == null ? null : ActiveOrdersField.GetValue(controller) as IList;
-                    if (activeOrders == null)
-                    {
-                        continue;
-                    }
-
-                    for (int orderIndex = 0; orderIndex < activeOrders.Count; orderIndex++)
-                    {
-                        object activeOrder = activeOrders[orderIndex];
-                        RecipeList.Entry recipe = activeOrder == null
-                            ? null
-                            : ActiveOrderRecipeField.GetValue(activeOrder) as RecipeList.Entry;
-                        if (recipe != null && recipe.m_order != null)
-                        {
-                            output.Add(recipe);
-                        }
-                    }
                     return true;
+                }
+
+                for (int orderIndex = 0; orderIndex < activeOrders.Count; orderIndex++)
+                {
+                    object activeOrder = activeOrders[orderIndex];
+                    RecipeList.Entry recipe = activeOrder == null
+                        ? null
+                        : ActiveOrderRecipeField.GetValue(activeOrder) as RecipeList.Entry;
+                    if (recipe != null && recipe.m_order != null)
+                    {
+                        output.Add(recipe);
+                    }
                 }
                 return true;
             }
@@ -492,6 +547,49 @@ namespace Overcooked2DishwasherBot
                 error = exception.GetType().Name + ": " + exception.Message;
                 return false;
             }
+        }
+
+        private IList GetActiveOrderList(PlayerControls player)
+        {
+            IList cachedOrders = GetOrderList(_flow, player);
+            if (cachedOrders != null)
+            {
+                return cachedOrders;
+            }
+
+            _flow = null;
+            ClientKitchenFlowControllerBase[] flows =
+                UnityEngine.Object.FindObjectsOfType<ClientKitchenFlowControllerBase>();
+            for (int i = 0; i < flows.Length; i++)
+            {
+                IList activeOrders = GetOrderList(flows[i], player);
+                if (activeOrders == null)
+                {
+                    continue;
+                }
+                _flow = flows[i];
+                return activeOrders;
+            }
+            return null;
+        }
+
+        private static IList GetOrderList(
+            ClientKitchenFlowControllerBase flow,
+            PlayerControls player)
+        {
+            if (!IsUsableFlow(flow) || player == null || player.PlayerIDProvider == null)
+            {
+                return null;
+            }
+
+            ClientTeamMonitor monitor = flow.GetMonitorForTeam(player.PlayerIDProvider.GetTeam());
+            ClientOrderControllerBase controller = monitor == null ? null : monitor.OrdersController;
+            return controller == null ? null : ActiveOrdersField.GetValue(controller) as IList;
+        }
+
+        private static bool IsUsableFlow(ClientKitchenFlowControllerBase flow)
+        {
+            return flow != null && flow.enabled && flow.gameObject.activeInHierarchy;
         }
 
         private static float HorizontalSqrDistance(Vector3 left, Vector3 right)

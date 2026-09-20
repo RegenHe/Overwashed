@@ -15,7 +15,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overwashed";
-        public const string PluginVersion = "1.5.1";
+        public const string PluginVersion = "1.5.2";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -237,6 +237,7 @@ namespace Overcooked2DishwasherBot
             _lastRoundRemaining = -1f;
             _nextRoundTimeCheck = 0f;
             _roundTimeReader.Clear();
+            _servePlanner.Clear();
             _lastCarriedItemId = 0;
             _dirtyTarget = null;
             _sinkTarget = null;
@@ -524,6 +525,7 @@ namespace Overcooked2DishwasherBot
             _roundIdentity = 0;
             _lastRoundRemaining = -1f;
             _roundTimeReader.Clear();
+            _servePlanner.Clear();
 
             if (enabled)
             {
@@ -1828,6 +1830,7 @@ namespace Overcooked2DishwasherBot
             _playerSnapshot = NoPlayers;
             _lastCarriedItemId = 0;
             ResetServingPlan(false);
+            _servePlanner.Clear();
             ReleaseRobotInputs(true);
             _navigator.Clear();
             _dirtyTarget = null;

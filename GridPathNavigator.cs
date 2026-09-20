@@ -17,8 +17,21 @@ namespace Overcooked2DishwasherBot
         };
 
         private static readonly PlayerControls[] NoPlayers = new PlayerControls[0];
+        private static readonly RaycastHit[] RaycastBuffer = new RaycastHit[64];
+        private static readonly RaycastHit[] SphereCastBuffer = new RaycastHit[64];
 
         private readonly List<Vector3> _worldPath = new List<Vector3>();
+        private readonly List<GridIndex> _candidateGoals = new List<GridIndex>(8);
+        private readonly List<GridIndex> _searchResult = new List<GridIndex>();
+        private readonly Queue<GridIndex> _searchQueue = new Queue<GridIndex>();
+        private readonly Dictionary<GridIndex, GridIndex> _searchParent =
+            new Dictionary<GridIndex, GridIndex>(default(GridIndex));
+        private readonly Dictionary<GridIndex, int> _searchDepth =
+            new Dictionary<GridIndex, int>(default(GridIndex));
+        private readonly Dictionary<GridIndex, int> _searchGoalOrder =
+            new Dictionary<GridIndex, int>(default(GridIndex));
+        private readonly HashSet<GridIndex> _searchVisited =
+            new HashSet<GridIndex>(default(GridIndex));
         private readonly HashSet<GridIndex> _rejectedInteractionCells = new HashSet<GridIndex>(default(GridIndex));
         private readonly HashSet<GridEdge> _blockedPathEdges = new HashSet<GridEdge>();
         private readonly HashSet<GridIndex> _dynamicBlockedCells = new HashSet<GridIndex>(default(GridIndex));
@@ -74,6 +87,8 @@ namespace Overcooked2DishwasherBot
         internal void Clear()
         {
             _worldPath.Clear();
+            _candidateGoals.Clear();
+            ResetSearchCollections();
             _target = null;
             _grid = null;
             _pathCursor = 0;
@@ -209,7 +224,7 @@ namespace Overcooked2DishwasherBot
                 return FinalApproachDirection(player, target, GetFacingDirection(direct));
             }
 
-            Status = "following waypoint " + (_pathCursor + 1) + "/" + _worldPath.Count;
+            Status = "following route";
             // While travelling between grid cells, do not exempt the eventual target's
             // colliders. Only the final facing/nudge step may intentionally touch it.
             if (RejectPhysicallyBlockedPathEdge(player, toWaypoint.normalized))
@@ -306,7 +321,7 @@ namespace Overcooked2DishwasherBot
             if (_pathCursor < _worldPath.Count)
             {
                 Vector3 toWaypoint = Flatten(_worldPath[_pathCursor] - playerPosition);
-                Status = "avoiding player via waypoint " + (_pathCursor + 1) + "/" + _worldPath.Count;
+                Status = "following avoidance route";
                 return SafeRouteDirection(player, toWaypoint.normalized);
             }
 
@@ -389,7 +404,8 @@ namespace Overcooked2DishwasherBot
             Point3 halfSize = _grid.GetGridHalfSize();
             _pathStartPoint = _grid.GetPosFromGridLocation(start);
 
-            List<GridIndex> goals = new List<GridIndex>();
+            List<GridIndex> goals = _candidateGoals;
+            goals.Clear();
             if (searchAllNeighbourCells)
             {
                 for (int x = -1; x <= 1; x++)
@@ -517,10 +533,11 @@ namespace Overcooked2DishwasherBot
             float safeDistanceSquared = safeDistance * safeDistance;
             Vector3 preferredDirection = CalculateRepulsion(playerPosition, threatPositions, player.transform.forward);
 
-            Queue<GridIndex> open = new Queue<GridIndex>();
-            Dictionary<GridIndex, GridIndex> parent = new Dictionary<GridIndex, GridIndex>(default(GridIndex));
-            Dictionary<GridIndex, int> depth = new Dictionary<GridIndex, int>(default(GridIndex));
-            HashSet<GridIndex> visited = new HashSet<GridIndex>(default(GridIndex));
+            ResetSearchCollections();
+            Queue<GridIndex> open = _searchQueue;
+            Dictionary<GridIndex, GridIndex> parent = _searchParent;
+            Dictionary<GridIndex, int> depth = _searchDepth;
+            HashSet<GridIndex> visited = _searchVisited;
             open.Enqueue(start);
             visited.Add(start);
             depth.Add(start, 0);
@@ -599,7 +616,8 @@ namespace Overcooked2DishwasherBot
                 return;
             }
 
-            List<GridIndex> path = new List<GridIndex>();
+            List<GridIndex> path = _searchResult;
+            path.Clear();
             GridIndex cursor = bestGoal;
             while (cursor != start)
             {
@@ -873,9 +891,10 @@ namespace Overcooked2DishwasherBot
 
         private List<GridIndex> FindPath(GridIndex start, GridIndex goal, Point3 halfSize, float walkingSurfaceY)
         {
-            Queue<GridIndex> open = new Queue<GridIndex>();
-            Dictionary<GridIndex, GridIndex> parent = new Dictionary<GridIndex, GridIndex>(default(GridIndex));
-            HashSet<GridIndex> visited = new HashSet<GridIndex>(default(GridIndex));
+            ResetSearchCollections();
+            Queue<GridIndex> open = _searchQueue;
+            Dictionary<GridIndex, GridIndex> parent = _searchParent;
+            HashSet<GridIndex> visited = _searchVisited;
             open.Enqueue(start);
             visited.Add(start);
 
@@ -885,7 +904,7 @@ namespace Overcooked2DishwasherBot
                 GridIndex current = open.Dequeue();
                 if (current == goal)
                 {
-                    List<GridIndex> result = new List<GridIndex>();
+                    List<GridIndex> result = _searchResult;
                     while (current != start)
                     {
                         result.Add(current);
@@ -928,7 +947,8 @@ namespace Overcooked2DishwasherBot
             out GridIndex selectedGoal)
         {
             selectedGoal = default(GridIndex);
-            Dictionary<GridIndex, int> goalOrder = new Dictionary<GridIndex, int>(default(GridIndex));
+            ResetSearchCollections();
+            Dictionary<GridIndex, int> goalOrder = _searchGoalOrder;
             for (int i = 0; i < goals.Count; i++)
             {
                 if (!goalOrder.ContainsKey(goals[i]))
@@ -938,14 +958,14 @@ namespace Overcooked2DishwasherBot
                 if (goals[i] == start)
                 {
                     selectedGoal = start;
-                    return new List<GridIndex>();
+                    return _searchResult;
                 }
             }
 
-            Queue<GridIndex> open = new Queue<GridIndex>();
-            Dictionary<GridIndex, GridIndex> parent = new Dictionary<GridIndex, GridIndex>(default(GridIndex));
-            Dictionary<GridIndex, int> depth = new Dictionary<GridIndex, int>(default(GridIndex));
-            HashSet<GridIndex> visited = new HashSet<GridIndex>(default(GridIndex));
+            Queue<GridIndex> open = _searchQueue;
+            Dictionary<GridIndex, GridIndex> parent = _searchParent;
+            Dictionary<GridIndex, int> depth = _searchDepth;
+            HashSet<GridIndex> visited = _searchVisited;
             open.Enqueue(start);
             visited.Add(start);
             depth.Add(start, 0);
@@ -1003,7 +1023,7 @@ namespace Overcooked2DishwasherBot
                 return null;
             }
 
-            List<GridIndex> result = new List<GridIndex>();
+            List<GridIndex> result = _searchResult;
             GridIndex cursor = selectedGoal;
             while (cursor != start)
             {
@@ -1012,6 +1032,16 @@ namespace Overcooked2DishwasherBot
             }
             result.Reverse();
             return result;
+        }
+
+        private void ResetSearchCollections()
+        {
+            _searchQueue.Clear();
+            _searchParent.Clear();
+            _searchDepth.Clear();
+            _searchGoalOrder.Clear();
+            _searchVisited.Clear();
+            _searchResult.Clear();
         }
 
         private bool IsWalkable(GridIndex index, GridIndex start, float walkingSurfaceY)
@@ -1118,17 +1148,17 @@ namespace Overcooked2DishwasherBot
 
         private static bool TryFindGround(Vector3 point, float walkingSurfaceY, out RaycastHit accepted)
         {
-            RaycastHit[] hits = Physics.RaycastAll(
+            RaycastHit[] hits;
+            int hitCount = BufferedRaycast(
                 point + Vector3.up * 1.75f,
                 Vector3.down,
                 3.5f,
-                -1,
-                QueryTriggerInteraction.Ignore);
+                out hits);
 
             bool found = false;
             float bestHeightDifference = float.PositiveInfinity;
             accepted = default(RaycastHit);
-            for (int i = 0; i < hits.Length; i++)
+            for (int i = 0; i < hitCount; i++)
             {
                 RaycastHit hit = hits[i];
                 float heightDifference = Mathf.Abs(hit.point.y - walkingSurfaceY);
@@ -1158,7 +1188,7 @@ namespace Overcooked2DishwasherBot
                 && HasGroundAhead(player, target, _avoidDirection)
                 && !HasBlockingCollider(player, target, _avoidDirection))
             {
-                Status += "; holding avoidance direction";
+                Status = "holding avoidance direction";
                 return _avoidDirection;
             }
 
@@ -1195,11 +1225,11 @@ namespace Overcooked2DishwasherBot
             {
                 _avoidDirection = avoidance.normalized;
                 _avoidUntil = Time.time + 0.4f;
-                Status += "; avoidance locked for 0.4s";
+                Status = "using local avoidance direction";
                 return _avoidDirection;
             }
 
-            Status += "; waiting for safe ground/dynamic obstacle";
+            Status = "waiting for safe ground/dynamic obstacle";
             return Vector3.zero;
         }
 
@@ -1220,7 +1250,7 @@ namespace Overcooked2DishwasherBot
             // The BFS path already describes which side of a counter to use. Local
             // left/right steering here used to fight that route and could orbit a table
             // corner forever. Hold position and let the blocked-edge/stuck logic rebuild.
-            Status += "; route temporarily blocked";
+            Status = "route temporarily blocked";
             return Vector3.zero;
         }
 
@@ -1258,7 +1288,7 @@ namespace Overcooked2DishwasherBot
 
             if (Time.time >= _facingBurstUntil && HorizontalSpeed(player) > 0.8f)
             {
-                Status += "; braking while facing target";
+                Status = "braking while facing target";
                 return Vector3.zero;
             }
             if (HasGroundAhead(player, target, desired)
@@ -1277,7 +1307,7 @@ namespace Overcooked2DishwasherBot
             // At an interaction goal, local left/right steering can undo the BFS route
             // and repeatedly drive back into an unrelated table. Stop here so the caller
             // can reject this interaction cell and request a different reachable side.
-            Status += "; final approach blocked";
+            Status = "final approach blocked";
             return Vector3.zero;
         }
 
@@ -1286,14 +1316,14 @@ namespace Overcooked2DishwasherBot
             Vector3 position = player.transform.position;
             float walkingSurfaceY = GetWalkingSurfaceY(player);
             Vector3 probe = position + direction * 0.55f + Vector3.up * 0.9f;
-            RaycastHit[] hits = Physics.RaycastAll(
+            RaycastHit[] hits;
+            int hitCount = BufferedRaycast(
                 probe,
                 Vector3.down,
                 2.1f,
-                -1,
-                QueryTriggerInteraction.Ignore);
+                out hits);
 
-            for (int i = 0; i < hits.Length; i++)
+            for (int i = 0; i < hitCount; i++)
             {
                 Collider collider = hits[i].collider;
                 if (collider == null || IsPartOf(collider.transform, player.gameObject))
@@ -1361,15 +1391,15 @@ namespace Overcooked2DishwasherBot
             Vector3 direction,
             float distance)
         {
-            RaycastHit[] hits = Physics.SphereCastAll(
+            RaycastHit[] hits;
+            int hitCount = BufferedSphereCast(
                 player.transform.position + Vector3.up * 0.45f,
                 0.24f,
                 direction,
                 distance,
-                -1,
-                QueryTriggerInteraction.Ignore);
+                out hits);
 
-            for (int i = 0; i < hits.Length; i++)
+            for (int i = 0; i < hitCount; i++)
             {
                 Collider collider = hits[i].collider;
                 if (collider == null || IsPartOf(collider.transform, player.gameObject))
@@ -1391,15 +1421,18 @@ namespace Overcooked2DishwasherBot
             Vector3 direction,
             float distance)
         {
-            RaycastHit[] hits = Physics.SphereCastAll(
+            RaycastHit[] hits;
+            int hitCount = BufferedSphereCast(
                 player.transform.position + Vector3.up * 0.45f,
                 0.2f,
                 direction,
                 distance,
-                -1,
-                QueryTriggerInteraction.Ignore);
+                out hits);
+            ClientPlayerAttachmentCarrier carrier = player.GetComponent<ClientPlayerAttachmentCarrier>();
+            GameObject carried = carrier == null ? null : carrier.InspectCarriedItem();
+            GroundCast groundCast = player.GetComponent<GroundCast>();
 
-            for (int i = 0; i < hits.Length; i++)
+            for (int i = 0; i < hitCount; i++)
             {
                 Collider collider = hits[i].collider;
                 if (collider == null)
@@ -1416,8 +1449,6 @@ namespace Overcooked2DishwasherBot
                     continue;
                 }
 
-                ClientPlayerAttachmentCarrier carrier = player.GetComponent<ClientPlayerAttachmentCarrier>();
-                GameObject carried = carrier == null ? null : carrier.InspectCarriedItem();
                 if (carried != null && IsPartOf(hitTransform, carried))
                 {
                     continue;
@@ -1436,7 +1467,6 @@ namespace Overcooked2DishwasherBot
                 }
 
 
-                GroundCast groundCast = player.GetComponent<GroundCast>();
                 if (groundCast != null && collider == groundCast.GetGroundCollider())
                 {
                     continue;
@@ -1455,18 +1485,18 @@ namespace Overcooked2DishwasherBot
 
         private static bool HasStaticBlockingCollider(PlayerControls player, GameObject target, Vector3 direction)
         {
-            RaycastHit[] hits = Physics.SphereCastAll(
+            RaycastHit[] hits;
+            int hitCount = BufferedSphereCast(
                 player.transform.position + Vector3.up * 0.45f,
                 0.2f,
                 direction,
                 0.55f,
-                -1,
-                QueryTriggerInteraction.Ignore);
+                out hits);
             GroundCast groundCast = player.GetComponent<GroundCast>();
             ClientPlayerAttachmentCarrier carrier = player.GetComponent<ClientPlayerAttachmentCarrier>();
             GameObject carried = carrier == null ? null : carrier.InspectCarriedItem();
 
-            for (int i = 0; i < hits.Length; i++)
+            for (int i = 0; i < hitCount; i++)
             {
                 Collider collider = hits[i].collider;
                 if (collider == null || IsPartOf(collider.transform, player.gameObject))
@@ -1501,6 +1531,67 @@ namespace Overcooked2DishwasherBot
                 return true;
             }
             return false;
+        }
+
+        private static int BufferedRaycast(
+            Vector3 origin,
+            Vector3 direction,
+            float distance,
+            out RaycastHit[] hits)
+        {
+            int count = Physics.RaycastNonAlloc(
+                origin,
+                direction,
+                RaycastBuffer,
+                distance,
+                -1,
+                QueryTriggerInteraction.Ignore);
+            if (count < RaycastBuffer.Length)
+            {
+                hits = RaycastBuffer;
+                return count;
+            }
+
+            // Preserve complete collision behaviour in unusually dense scenes. This
+            // allocation happens only when the reusable buffer is genuinely full.
+            hits = Physics.RaycastAll(
+                origin,
+                direction,
+                distance,
+                -1,
+                QueryTriggerInteraction.Ignore);
+            return hits.Length;
+        }
+
+        private static int BufferedSphereCast(
+            Vector3 origin,
+            float radius,
+            Vector3 direction,
+            float distance,
+            out RaycastHit[] hits)
+        {
+            int count = Physics.SphereCastNonAlloc(
+                origin,
+                radius,
+                direction,
+                SphereCastBuffer,
+                distance,
+                -1,
+                QueryTriggerInteraction.Ignore);
+            if (count < SphereCastBuffer.Length)
+            {
+                hits = SphereCastBuffer;
+                return count;
+            }
+
+            hits = Physics.SphereCastAll(
+                origin,
+                radius,
+                direction,
+                distance,
+                -1,
+                QueryTriggerInteraction.Ignore);
+            return hits.Length;
         }
 
         private static float GetWalkingSurfaceY(PlayerControls player)
