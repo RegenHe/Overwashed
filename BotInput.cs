@@ -60,6 +60,9 @@ namespace Overcooked2DishwasherBot
         private static readonly FieldInfo NetworkPadField = typeof(ClientInputTransmitter).GetField(
             "m_Pad",
             BindingFlags.Instance | BindingFlags.NonPublic);
+        private static readonly FieldInfo NetworkForceSendField = typeof(ClientInputTransmitter).GetField(
+            "m_bForceSend",
+            BindingFlags.Instance | BindingFlags.NonPublic);
         private static readonly Type NetworkPadType = typeof(ClientInputTransmitter).GetNestedType(
             "Pad",
             BindingFlags.NonPublic);
@@ -83,6 +86,7 @@ namespace Overcooked2DishwasherBot
         private readonly BotLogicalValue _moveY;
 
         private object _networkPad;
+        private ClientInputTransmitter _networkTransmitter;
         private ILogicalButton _originalNetworkPickup;
         private ILogicalButton _originalNetworkUse;
         private ILogicalButton _originalNetworkDash;
@@ -128,6 +132,11 @@ namespace Overcooked2DishwasherBot
                     && ReferenceEquals(_scheme.m_moveX, _moveX)
                     && ReferenceEquals(_scheme.m_moveY, _moveY);
             }
+        }
+
+        internal bool UsesNetworkInput
+        {
+            get { return _networkPad != null && _networkTransmitter != null; }
         }
 
         // A remote client's local PlayerControls and ClientInputTransmitter do not read
@@ -179,6 +188,7 @@ namespace Overcooked2DishwasherBot
                 }
 
                 if (ReferenceEquals(_networkPad, pad)
+                    && _networkTransmitter == transmitter
                     && ReferenceEquals(NetworkMoveXField.GetValue(pad), _moveX)
                     && ReferenceEquals(NetworkMoveYField.GetValue(pad), _moveY)
                     && ReferenceEquals(NetworkPickupField.GetValue(pad), _pickup)
@@ -206,6 +216,7 @@ namespace Overcooked2DishwasherBot
                 }
 
                 _networkPad = pad;
+                _networkTransmitter = transmitter;
                 _originalNetworkMoveX = originalMoveX;
                 _originalNetworkMoveY = originalMoveY;
                 _originalNetworkPickup = originalPickup;
@@ -259,6 +270,27 @@ namespace Overcooked2DishwasherBot
             _dash.Down = down;
         }
 
+        internal void ForceNetworkState()
+        {
+            if (_networkTransmitter == null || NetworkForceSendField == null)
+            {
+                return;
+            }
+
+            try
+            {
+                // ClientInputTransmitter normally includes transform rotation only when
+                // controller state changes. Final interaction facing can rotate in place,
+                // so explicitly request one state packet before the action pulse.
+                NetworkForceSendField.SetValue(_networkTransmitter, true);
+            }
+            catch
+            {
+                // A scene transition can destroy the transmitter between frames. The
+                // normal binding validation will rebuild it on the next update.
+            }
+        }
+
         internal void ReleaseAll()
         {
             _moveX.Value = 0f;
@@ -300,6 +332,7 @@ namespace Overcooked2DishwasherBot
         {
             if (_networkPad == null)
             {
+                _networkTransmitter = null;
                 return;
             }
 
@@ -333,6 +366,7 @@ namespace Overcooked2DishwasherBot
             }
 
             _networkPad = null;
+            _networkTransmitter = null;
             _originalNetworkPickup = null;
             _originalNetworkUse = null;
             _originalNetworkDash = null;

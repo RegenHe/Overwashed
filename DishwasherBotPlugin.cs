@@ -15,7 +15,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overwashed";
-        public const string PluginVersion = "1.5.2";
+        public const string PluginVersion = "1.5.3";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -75,6 +75,8 @@ namespace Overcooked2DishwasherBot
         private int _lastCarriedItemId;
         private int _deliveringItemId;
         private int _roundIdentity;
+        private int _remoteServePreparationTargetId;
+        private float _remoteServeActionReadyTime;
         private GameObject _lastDirtyInteractionTarget;
         private Texture2D _statusBackground;
         private Texture2D _statusIcon;
@@ -123,6 +125,23 @@ namespace Overcooked2DishwasherBot
         private float InteractionRetryInterval
         {
             get { return FastModeEnabled ? 0.1f : 0.75f; }
+        }
+
+        private bool UsesRemoteNetworkInput
+        {
+            get { return _input != null && _input.UsesNetworkInput; }
+        }
+
+        private float ServingInteractionRetryInterval
+        {
+            get
+            {
+                if (!UsesRemoteNetworkInput)
+                {
+                    return InteractionRetryInterval;
+                }
+                return FastModeEnabled ? 0.6f : 1.25f;
+            }
         }
 
         private void Awake()
@@ -239,6 +258,7 @@ namespace Overcooked2DishwasherBot
             _roundTimeReader.Clear();
             _servePlanner.Clear();
             _lastCarriedItemId = 0;
+            ResetRemoteServingPreparation();
             _dirtyTarget = null;
             _sinkTarget = null;
             ResetServingPlan(true);
@@ -514,6 +534,7 @@ namespace Overcooked2DishwasherBot
             _droppingItemId = 0;
             _lastCarriedItemId = 0;
             _deliveringItemId = 0;
+            ResetRemoteServingPreparation();
             _lastDirtyInteractionTarget = null;
             _avoidingPlayers = false;
             _avoidanceThreats.Clear();
@@ -965,17 +986,26 @@ namespace Overcooked2DishwasherBot
             GameObject target = ResolveServeInteractionTarget(plate.gameObject, true);
             bool atCell;
             Vector3 direction = _navigator.DirectionTo(_player, target, true, out atCell);
+            RefreshInteractionSelection(atCell);
             if (IsPickupSelected(plate.gameObject))
             {
                 _serveInteractionCellSince = 0f;
                 SetMove(Vector3.zero);
                 SetState(cleanPlate ? BotState.PickingUpCleanPlate : BotState.PickingUpReadyMeal);
+                if (!PrepareRemoteServingAction(plate.gameObject))
+                {
+                    return;
+                }
                 PulseServingAction(0.8f);
                 return;
             }
 
             SetState(cleanPlate ? BotState.MovingToCleanPlate : BotState.MovingToReadyMeal);
             SetMove(direction);
+            if (!atCell)
+            {
+                ResetRemoteServingPreparation();
+            }
             UpdateServingInteractionCell(atCell);
         }
 
@@ -984,17 +1014,26 @@ namespace Overcooked2DishwasherBot
             GameObject target = ResolveServeInteractionTarget(meal, false);
             bool atCell;
             Vector3 direction = _navigator.DirectionTo(_player, target, true, out atCell);
+            RefreshInteractionSelection(atCell);
             if (IsPlacementSelected(meal))
             {
                 _serveInteractionCellSince = 0f;
                 SetMove(Vector3.zero);
                 SetState(BotState.PlatingMeal);
+                if (!PrepareRemoteServingAction(meal))
+                {
+                    return;
+                }
                 PulseServingAction(0.8f);
                 return;
             }
 
             SetState(BotState.PlatingMeal);
             SetMove(direction);
+            if (!atCell)
+            {
+                ResetRemoteServingPreparation();
+            }
             UpdateServingInteractionCell(atCell);
         }
 
@@ -1012,18 +1051,71 @@ namespace Overcooked2DishwasherBot
                 : GetAttachPointOrStation(attachStation);
             bool atCell;
             Vector3 direction = _navigator.DirectionTo(_player, navigationTarget, true, out atCell);
+            RefreshInteractionSelection(atCell);
             if (IsPlacementSelected(station.gameObject))
             {
                 _serveInteractionCellSince = 0f;
                 SetMove(Vector3.zero);
                 SetState(BotState.ServingMeal);
+                if (!PrepareRemoteServingAction(station.gameObject))
+                {
+                    return;
+                }
                 PulseServingAction(1.0f);
                 return;
             }
 
             SetState(BotState.MovingToServingStation);
             SetMove(direction);
+            if (!atCell)
+            {
+                ResetRemoteServingPreparation();
+            }
             UpdateServingInteractionCell(atCell);
+        }
+
+        private void RefreshInteractionSelection(bool atCell)
+        {
+            if (atCell && _player != null)
+            {
+                // DirectionTo may have rotated the chef after the game's normal scan for
+                // this frame. Refresh through the game's public scan so the selection and
+                // the action pulse use the same position and facing.
+                _player.UpdateNearbyObjects();
+            }
+        }
+
+        private bool PrepareRemoteServingAction(GameObject target)
+        {
+            if (!UsesRemoteNetworkInput || target == null)
+            {
+                return true;
+            }
+
+            int targetId = target.GetInstanceID();
+            if (_remoteServePreparationTargetId != targetId)
+            {
+                _remoteServePreparationTargetId = targetId;
+                _remoteServeActionReadyTime = Time.time + 0.2f;
+                _input.ForceNetworkState();
+                return false;
+            }
+
+            if (Time.time < _remoteServeActionReadyTime)
+            {
+                return false;
+            }
+
+            // The first forced packet gives the host time to receive the final facing.
+            // Include it again with the action transition for exact local prediction.
+            _input.ForceNetworkState();
+            return true;
+        }
+
+        private void ResetRemoteServingPreparation()
+        {
+            _remoteServePreparationTargetId = 0;
+            _remoteServeActionReadyTime = 0f;
         }
 
         private void PulseServingAction(float pendingSeconds)
@@ -1033,7 +1125,13 @@ namespace Overcooked2DishwasherBot
                 return;
             }
             PulsePickup();
-            _servePendingUntil = Time.time + (FastModeEnabled ? 0.15f : pendingSeconds);
+            float confirmationWindow = FastModeEnabled ? 0.15f : pendingSeconds;
+            if (UsesRemoteNetworkInput)
+            {
+                confirmationWindow = Mathf.Max(confirmationWindow, 0.9f);
+            }
+            _servePendingUntil = Time.time + confirmationWindow;
+            ResetRemoteServingPreparation();
         }
 
         private void UpdateServingInteractionCell(bool atCell)
@@ -1047,10 +1145,11 @@ namespace Overcooked2DishwasherBot
             {
                 _serveInteractionCellSince = Time.time;
             }
-            else if (Time.time - _serveInteractionCellSince >= InteractionRetryInterval)
+            else if (Time.time - _serveInteractionCellSince >= ServingInteractionRetryInterval)
             {
                 _navigator.RejectCurrentInteractionCell();
                 _serveInteractionCellSince = 0f;
+                ResetRemoteServingPreparation();
             }
         }
 
@@ -1260,6 +1359,7 @@ namespace Overcooked2DishwasherBot
             _servePendingUntil = 0f;
             _serveInteractionCellSince = 0f;
             _nextServeScanTime = 0f;
+            ResetRemoteServingPreparation();
             if (clearNavigator)
             {
                 _navigator.Clear();
@@ -1706,8 +1806,15 @@ namespace Overcooked2DishwasherBot
             {
                 return;
             }
-            _pickupDownUntil = Time.time + (FastModeEnabled ? 0.05f : 0.12f);
-            _nextActionTime = Time.time + (FastModeEnabled ? 0.1f : 0.35f);
+            float pulseDuration = FastModeEnabled ? 0.05f : 0.12f;
+            float retryDelay = FastModeEnabled ? 0.1f : 0.35f;
+            if (UsesRemoteNetworkInput)
+            {
+                pulseDuration = Mathf.Max(pulseDuration, 0.16f);
+                retryDelay = Mathf.Max(retryDelay, 0.3f);
+            }
+            _pickupDownUntil = Time.time + pulseDuration;
+            _nextActionTime = Time.time + retryDelay;
             _input.SetPickup(true);
         }
 

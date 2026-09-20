@@ -2,7 +2,14 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.5.2**.
+Current version: **1.5.3**.
+
+### 1.5.3 remote-client serving synchronisation
+
+- Refreshes the game's public nearby-interaction scan after final facing is applied, so pickup and placement selection no longer uses the previous frame's direction.
+- For a non-host keyboard chef, sends the final transform state before the serving action, holds position for a short synchronisation window, then sends the normal pickup/place input transition.
+- Extends only the remote client's serving-side rejection and server-confirmation windows. Host/offline interaction speed and route timing remain unchanged.
+- Keeps remote pickup transitions active long enough to cross multiple synchronisation frames, including when `Fast interactions` is enabled.
 
 ### 1.5.2 release performance pass
 

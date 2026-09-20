@@ -41,3 +41,13 @@ These names and signatures were taken from the locally installed `Overcooked2_Da
 - `ClientModifiableRoundTimer` initialises the same property to the time limit and counts it downward, so its `TimeElapsed` value is already the survival-mode remaining time. `ClientUnlimitedRoundTimer` has no finite remaining-time threshold.
 - `PlayerControls.UpdateNearbyObjects()` calls `InteractWithItemHelper.GetCollidersInArc(1f, PI, ...)`; grid selection ranks the four cardinal neighbouring cells against the chef's `forward`, so interaction facing must target the chosen grid cell rather than an offset model pivot.
 - `PlayerControlsHelper.TurnTowardsDirection(GameObject, Vector3, float, float)` is the game's public in-place rotation helper and is used to keep the local interaction scan aligned during zero-input braking frames.
+
+## Remote-client pickup and placement timing
+
+Verified against the local `Assembly-CSharp.dll` for 1.5.3:
+
+- `ClientPlayerControlsImpl_Default.Update_Impl` calls `PlayerControls.UpdateNearbyObjects()` immediately before `Update_Carry()` for a locally controlled client chef.
+- `Update_Carry()` consumes `m_pickupButton.JustPressed()` and sends `ClientMessenger.ChefEventMessage` with `CurrentInteractionObjects.m_TheOriginalHandlePickup`.
+- `PlayerControls.UpdateNearbyObjects()` is public and rebuilds pickup and placement handlers from the chef's current transform through `FindNearbyObjects()`.
+- `ClientInputTransmitter.UpdateSynchronising()` sends controller state only when it differs from the previous state or private `m_bForceSend` is set. The transmitted state includes the chef transform rotation.
+- Therefore, rotating the client chef after its normal interaction scan can pair an action with a stale local target or stale host rotation. The Mod now refreshes the scan and explicitly sends a stabilisation state before a remote serving action.
