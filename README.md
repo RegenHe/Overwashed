@@ -2,7 +2,14 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.5.0**.
+Current version: **1.5.1**.
+
+### 1.5.1 abnormal round-exit recovery
+
+- Restores a temporary late-round `Serve in order` override immediately when the active Unity scene changes, covering restart, return-to-map, and direct level-exit flows even if no `InRound = false` frame is observed.
+- Treats replacement of the client flow/timer instance as a new round and restores the previous round's setting before applying any new cutoff.
+- For ordinary countdown levels, also detects a same-instance restart when remaining time jumps back upward; survival timers are excluded because legitimate deliveries can add time.
+- Scene changes clear cached targets, serving plans, paths, carried-item identity, and robot input so stale level objects cannot leak into the replacement round.
 
 ### 1.5.0 nearest drop-off refresh and late-round order release
 

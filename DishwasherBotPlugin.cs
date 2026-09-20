@@ -6,6 +6,7 @@ using BepInEx.Configuration;
 using BepInEx.Logging;
 using Team17.Online.Multiplayer.Messaging;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Overcooked2DishwasherBot
 {
@@ -14,7 +15,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overwashed";
-        public const string PluginVersion = "1.5.0";
+        public const string PluginVersion = "1.5.1";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -68,10 +69,12 @@ namespace Overcooked2DishwasherBot
         private float _servePendingUntil;
         private float _nextPlayerSnapshotTime;
         private float _nextRoundTimeCheck;
+        private float _lastRoundRemaining = -1f;
         private PlayerControls[] _playerSnapshot = NoPlayers;
         private int _droppingItemId;
         private int _lastCarriedItemId;
         private int _deliveringItemId;
+        private int _roundIdentity;
         private GameObject _lastDirtyInteractionTarget;
         private Texture2D _statusBackground;
         private Texture2D _statusIcon;
@@ -159,6 +162,7 @@ namespace Overcooked2DishwasherBot
                 new ConfigDescription(
                     "Remaining seconds at which ordered serving is temporarily disabled.",
                     new AcceptableValueRange<int>(0, 120)));
+            SceneManager.activeSceneChanged += OnActiveSceneChanged;
             _fastMode = Config.Bind(
                 "Speed",
                 "FastMode",
@@ -219,9 +223,25 @@ namespace Overcooked2DishwasherBot
 
         private void OnDestroy()
         {
+            SceneManager.activeSceneChanged -= OnActiveSceneChanged;
             RestoreServeOrderOverride();
             ShutdownBinding();
             DestroyStatusBadgeTextures();
+        }
+
+        private void OnActiveSceneChanged(Scene previousScene, Scene nextScene)
+        {
+            RestoreServeOrderOverride();
+            _roundObservedActive = false;
+            _roundIdentity = 0;
+            _lastRoundRemaining = -1f;
+            _nextRoundTimeCheck = 0f;
+            _roundTimeReader.Clear();
+            _lastCarriedItemId = 0;
+            _dirtyTarget = null;
+            _sinkTarget = null;
+            ResetServingPlan(true);
+            ReleaseRobotInputs(false);
         }
 
         private void OnGUI()
@@ -501,6 +521,8 @@ namespace Overcooked2DishwasherBot
             _roundObservedActive = false;
             _serveOrderAutoChanged = false;
             _serveInOrderBeforeAutoChange = _serveInOrder.Value;
+            _roundIdentity = 0;
+            _lastRoundRemaining = -1f;
             _roundTimeReader.Clear();
 
             if (enabled)
@@ -1157,13 +1179,37 @@ namespace Overcooked2DishwasherBot
                     RestoreServeOrderOverride();
                 }
                 _roundObservedActive = false;
+                _roundIdentity = 0;
+                _lastRoundRemaining = -1f;
                 return;
+            }
+
+            int currentRoundIdentity = _roundTimeReader.RoundIdentity;
+            bool roundObjectChanged = _roundObservedActive
+                && _roundIdentity != 0
+                && currentRoundIdentity != 0
+                && currentRoundIdentity != _roundIdentity;
+            bool regularTimerRestarted = _roundObservedActive
+                && timeAvailable
+                && _roundTimeReader.CanDetectRestartFromRemainingJump
+                && _lastRoundRemaining >= 0f
+                && remainingSeconds > _lastRoundRemaining + 1f;
+            if (roundObjectChanged || regularTimerRestarted)
+            {
+                RestoreServeOrderOverride();
+                _roundObservedActive = false;
+                _lastRoundRemaining = -1f;
             }
 
             if (!_roundObservedActive)
             {
                 _roundObservedActive = true;
                 _serveOrderAutoChanged = false;
+                _roundIdentity = currentRoundIdentity;
+            }
+            if (timeAvailable)
+            {
+                _lastRoundRemaining = remainingSeconds;
             }
 
             if (!featureActive)

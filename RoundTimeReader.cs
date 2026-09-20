@@ -1,4 +1,5 @@
 using UnityEngine;
+using System.Runtime.CompilerServices;
 
 namespace Overcooked2DishwasherBot
 {
@@ -6,10 +7,15 @@ namespace Overcooked2DishwasherBot
     {
         private ClientKitchenFlowControllerBase _flow;
 
+        internal int RoundIdentity { get; private set; }
+        internal bool CanDetectRestartFromRemainingJump { get; private set; }
+
         internal bool TryRead(out bool inRound, out float remainingSeconds)
         {
             inRound = false;
             remainingSeconds = 0f;
+            RoundIdentity = 0;
+            CanDetectRestartFromRemainingJump = false;
 
             ClientKitchenFlowControllerBase flow = GetFlow();
             if (flow == null)
@@ -24,7 +30,12 @@ namespace Overcooked2DishwasherBot
             }
 
             IClientRoundTimer timer = flow.RoundTimer;
-            if (timer == null || timer is ClientUnlimitedRoundTimer)
+            if (timer == null)
+            {
+                return false;
+            }
+            RoundIdentity = (flow.GetInstanceID() * 397) ^ RuntimeHelpers.GetHashCode(timer);
+            if (timer is ClientUnlimitedRoundTimer)
             {
                 return false;
             }
@@ -50,12 +61,15 @@ namespace Overcooked2DishwasherBot
             }
 
             remainingSeconds = Mathf.Max(0f, timeLimit - timer.TimeElapsed);
+            CanDetectRestartFromRemainingJump = true;
             return true;
         }
 
         internal void Clear()
         {
             _flow = null;
+            RoundIdentity = 0;
+            CanDetectRestartFromRemainingJump = false;
         }
 
         private ClientKitchenFlowControllerBase GetFlow()
