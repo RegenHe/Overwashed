@@ -15,7 +15,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overwashed";
-        public const string PluginVersion = "1.5.4";
+        public const string PluginVersion = "1.5.5";
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -82,7 +82,9 @@ namespace Overcooked2DishwasherBot
         private int _deliveringItemId;
         private int _roundIdentity;
         private int _remoteServePreparationTargetId;
+        private int _interactionRefreshTargetId;
         private float _remoteServeActionReadyTime;
+        private float _nextInteractionRefreshTime;
         private GameObject _lastDirtyInteractionTarget;
         private Texture2D _statusBackground;
         private Texture2D _statusIcon;
@@ -138,7 +140,10 @@ namespace Overcooked2DishwasherBot
 
         private float InteractionRetryInterval
         {
-            get { return FastModeEnabled ? 0.1f : 0.75f; }
+            // Fast mode keeps the actual button pulse at 0.1s. Rejecting an approach
+            // cell is a much more expensive spatial decision because it forces another
+            // grid search, so give turning/braking a few frames even in Fast mode.
+            get { return FastModeEnabled ? 0.35f : 0.75f; }
         }
 
         private bool UsesRemoteNetworkInput
@@ -411,6 +416,7 @@ namespace Overcooked2DishwasherBot
                 _nextDirtyScanTime = 0f;
                 _nextSinkScanTime = 0f;
                 _nextServeScanTime = 0f;
+                _nextInteractionRefreshTime = 0f;
                 _dirtyInteractionCellSince = 0f;
                 _sinkInteractionCellSince = 0f;
                 _serveInteractionCellSince = 0f;
@@ -543,6 +549,8 @@ namespace Overcooked2DishwasherBot
             _serveInteractionCellSince = 0f;
             _nextServeScanTime = 0f;
             _servePendingUntil = 0f;
+            _interactionRefreshTargetId = 0;
+            _nextInteractionRefreshTime = 0f;
             _nextPlayerSnapshotTime = 0f;
             _nextRoundTimeCheck = 0f;
             _playerSnapshot = NoPlayers;
@@ -1002,7 +1010,7 @@ namespace Overcooked2DishwasherBot
             GameObject target = ResolveServeInteractionTarget(plate.gameObject, true);
             bool atCell;
             Vector3 direction = _navigator.DirectionTo(_player, target, true, out atCell);
-            RefreshInteractionSelection(atCell);
+            RefreshInteractionSelection(atCell, plate.gameObject);
             if (IsPickupSelected(plate.gameObject))
             {
                 _serveInteractionCellSince = 0f;
@@ -1030,7 +1038,7 @@ namespace Overcooked2DishwasherBot
             GameObject target = ResolveServeInteractionTarget(meal, false);
             bool atCell;
             Vector3 direction = _navigator.DirectionTo(_player, target, true, out atCell);
-            RefreshInteractionSelection(atCell);
+            RefreshInteractionSelection(atCell, meal);
             if (IsPlacementSelected(meal))
             {
                 _serveInteractionCellSince = 0f;
@@ -1067,7 +1075,7 @@ namespace Overcooked2DishwasherBot
                 : GetAttachPointOrStation(attachStation);
             bool atCell;
             Vector3 direction = _navigator.DirectionTo(_player, navigationTarget, true, out atCell);
-            RefreshInteractionSelection(atCell);
+            RefreshInteractionSelection(atCell, station.gameObject);
             if (IsPlacementSelected(station.gameObject))
             {
                 _serveInteractionCellSince = 0f;
@@ -1090,13 +1098,26 @@ namespace Overcooked2DishwasherBot
             UpdateServingInteractionCell(atCell);
         }
 
-        private void RefreshInteractionSelection(bool atCell)
+        private void RefreshInteractionSelection(bool atCell, GameObject target)
         {
-            if (atCell && _player != null)
+            int targetId = target == null ? 0 : target.GetInstanceID();
+            if (_interactionRefreshTargetId != targetId)
+            {
+                _interactionRefreshTargetId = targetId;
+                _nextInteractionRefreshTime = 0f;
+            }
+
+            if (atCell
+                && _navigator.InteractionFacingReady
+                && _player != null
+                && Time.unscaledTime >= _nextInteractionRefreshTime)
             {
                 // DirectionTo may have rotated the chef after the game's normal scan for
                 // this frame. Refresh through the game's public scan so the selection and
-                // the action pulse use the same position and facing.
+                // the action pulse use the same position and facing. Do not run the arc
+                // collider scan every render frame; 10 Hz is already as fast as Fast
+                // mode's action cadence.
+                _nextInteractionRefreshTime = Time.unscaledTime + (FastModeEnabled ? 0.1f : 0.15f);
                 _player.UpdateNearbyObjects();
             }
         }
@@ -1152,7 +1173,7 @@ namespace Overcooked2DishwasherBot
 
         private void UpdateServingInteractionCell(bool atCell)
         {
-            if (!atCell)
+            if (!atCell || !_navigator.InteractionFacingReady)
             {
                 _serveInteractionCellSince = 0f;
                 return;
@@ -1374,6 +1395,8 @@ namespace Overcooked2DishwasherBot
             _deliveringItemId = 0;
             _servePendingUntil = 0f;
             _serveInteractionCellSince = 0f;
+            _interactionRefreshTargetId = 0;
+            _nextInteractionRefreshTime = 0f;
             _nextServeScanTime = 0f;
             ResetRemoteServingPreparation();
             if (clearNavigator)
@@ -1546,7 +1569,7 @@ namespace Overcooked2DishwasherBot
 
             SetState(BotState.MovingToDirtyPlates);
             SetMove(direction);
-            if (!atCell)
+            if (!atCell || !_navigator.InteractionFacingReady)
             {
                 _dirtyInteractionCellSince = 0f;
                 return;
@@ -1642,7 +1665,7 @@ namespace Overcooked2DishwasherBot
 
         private void UpdateSinkInteractionCell(bool atCell)
         {
-            if (!atCell)
+            if (!atCell || !_navigator.InteractionFacingReady)
             {
                 _sinkInteractionCellSince = 0f;
                 return;
@@ -1652,7 +1675,7 @@ namespace Overcooked2DishwasherBot
                 _sinkInteractionCellSince = Time.time;
             }
             else if (Time.time - _sinkInteractionCellSince
-                >= (FastModeEnabled ? 0.1f : 0.65f))
+                >= (FastModeEnabled ? 0.35f : 0.65f))
             {
                 if (!_navigator.RejectCurrentInteractionCell())
                 {

@@ -35,7 +35,8 @@ namespace Overcooked2DishwasherBot
         private readonly HashSet<GridIndex> _rejectedInteractionCells = new HashSet<GridIndex>(default(GridIndex));
         private readonly HashSet<GridEdge> _blockedPathEdges = new HashSet<GridEdge>();
         private readonly HashSet<GridIndex> _dynamicBlockedCells = new HashSet<GridIndex>(default(GridIndex));
-        private readonly Dictionary<GridIndex, bool> _walkabilityCache = new Dictionary<GridIndex, bool>(default(GridIndex));
+        private readonly Dictionary<GridIndex, WalkabilityCacheEntry> _walkabilityCache =
+            new Dictionary<GridIndex, WalkabilityCacheEntry>(default(GridIndex));
         private PlayerControls[] _playerSnapshot = NoPlayers;
         private GameObject _target;
         private GridManager _grid;
@@ -62,10 +63,14 @@ namespace Overcooked2DishwasherBot
         private float _meaningfulProgressTime;
         private float _dashSuppressedUntil;
         private float _chefAvoidanceRadius;
+        private GridManager _walkabilityCacheGrid;
+        private float _walkabilityCacheSurfaceY;
+        private bool _hasWalkabilityCacheSurface;
 
         internal string Status { get; private set; }
         internal bool CanDash { get; private set; }
         internal bool CanExtremeDash { get; private set; }
+        internal bool InteractionFacingReady { get; private set; }
 
         internal void SetPlayerSnapshot(PlayerControls[] players)
         {
@@ -102,6 +107,9 @@ namespace Overcooked2DishwasherBot
             _blockedPathEdges.Clear();
             _dynamicBlockedCells.Clear();
             _walkabilityCache.Clear();
+            _walkabilityCacheGrid = null;
+            _walkabilityCacheSurfaceY = 0f;
+            _hasWalkabilityCacheSurface = false;
             _avoidDirection = Vector3.zero;
             _avoidUntil = 0f;
             _brakingPathCursor = -1;
@@ -117,6 +125,7 @@ namespace Overcooked2DishwasherBot
             _dashSuppressedUntil = 0f;
             CanDash = false;
             CanExtremeDash = false;
+            InteractionFacingReady = false;
             Status = "cleared";
         }
 
@@ -134,6 +143,7 @@ namespace Overcooked2DishwasherBot
             atInteractionCell = false;
             CanDash = false;
             CanExtremeDash = false;
+            InteractionFacingReady = false;
             if (player == null || target == null)
             {
                 return Vector3.zero;
@@ -273,6 +283,7 @@ namespace Overcooked2DishwasherBot
             reachedAvoidanceGoal = false;
             CanDash = false;
             CanExtremeDash = false;
+            InteractionFacingReady = false;
             if (player == null || threatPositions == null || threatPositions.Count == 0)
             {
                 return Vector3.zero;
@@ -356,6 +367,7 @@ namespace Overcooked2DishwasherBot
             _interactionFacingDirection = Vector3.zero;
             _facingTarget = null;
             _facingBurstUntil = 0f;
+            InteractionFacingReady = false;
             Status = "interaction cell rejected";
             return true;
         }
@@ -387,6 +399,7 @@ namespace Overcooked2DishwasherBot
             _grid = playerGrid;
             GridIndex start = _grid.GetUnclampedGridLocationFromPos(player.transform.position);
             float walkingSurfaceY = GetWalkingSurfaceY(player);
+            PrepareWalkabilityCache(playerGrid, walkingSurfaceY);
             CollectDynamicBlockedCells(player, start, walkingSurfaceY, true);
             // Some kitchens register counters and stations on local GridManager instances
             // even though chefs can walk between them on one continuous floor. A grid ID
@@ -493,13 +506,7 @@ namespace Overcooked2DishwasherBot
 
             for (int i = 0; i < best.Count; i++)
             {
-                Vector3 point = _grid.GetPosFromGridLocation(best[i]);
-                RaycastHit hit;
-                if (TryFindGround(point, walkingSurfaceY, out hit))
-                {
-                    point.y = hit.point.y;
-                }
-                _worldPath.Add(point);
+                _worldPath.Add(GetGroundAdjustedPoint(best[i], walkingSurfaceY));
             }
         }
 
@@ -523,6 +530,7 @@ namespace Overcooked2DishwasherBot
 
             Vector3 playerPosition = player.transform.position;
             float walkingSurfaceY = GetWalkingSurfaceY(player);
+            PrepareWalkabilityCache(_grid, walkingSurfaceY);
             GridIndex start = _grid.GetUnclampedGridLocationFromPos(playerPosition);
             Point3 halfSize = _grid.GetGridHalfSize();
             // The bot may begin avoidance inside the configured clearance radius. Only
@@ -628,13 +636,7 @@ namespace Overcooked2DishwasherBot
 
             for (int i = 0; i < path.Count; i++)
             {
-                Vector3 point = _grid.GetPosFromGridLocation(path[i]);
-                RaycastHit hit;
-                if (TryFindGround(point, walkingSurfaceY, out hit))
-                {
-                    point.y = hit.point.y;
-                }
-                _worldPath.Add(point);
+                _worldPath.Add(GetGroundAdjustedPoint(path[i], walkingSurfaceY));
             }
 
             _hasPath = _worldPath.Count > 0;
@@ -836,7 +838,6 @@ namespace Overcooked2DishwasherBot
             bool includeAvoidanceRadius)
         {
             _dynamicBlockedCells.Clear();
-            _walkabilityCache.Clear();
             if (_grid == null)
             {
                 return;
@@ -1056,23 +1057,63 @@ namespace Overcooked2DishwasherBot
                 return false;
             }
 
-            bool cached;
-            if (_walkabilityCache.TryGetValue(index, out cached))
+            float now = Time.unscaledTime;
+            WalkabilityCacheEntry cached;
+            if (_walkabilityCache.TryGetValue(index, out cached)
+                && cached.ExpiresAt > now)
             {
-                return cached;
+                return cached.Walkable;
             }
 
             GameObject occupant = _grid.GetGridOccupant(index);
             if (occupant != null && !IsWalkableOccupant(occupant))
             {
-                _walkabilityCache[index] = false;
+                _walkabilityCache[index] = new WalkabilityCacheEntry(false, 0f, now + 0.5f);
                 return false;
             }
 
             RaycastHit hit;
             bool walkable = TryFindGround(_grid.GetPosFromGridLocation(index), walkingSurfaceY, out hit);
-            _walkabilityCache[index] = walkable;
+            _walkabilityCache[index] = new WalkabilityCacheEntry(
+                walkable,
+                walkable ? hit.point.y : 0f,
+                now + (walkable ? 0.75f : 0.35f));
             return walkable;
+        }
+
+        private void PrepareWalkabilityCache(GridManager grid, float walkingSurfaceY)
+        {
+            if (_walkabilityCacheGrid == grid
+                && _hasWalkabilityCacheSurface
+                && Mathf.Abs(_walkabilityCacheSurfaceY - walkingSurfaceY) <= 0.2f)
+            {
+                return;
+            }
+
+            _walkabilityCache.Clear();
+            _walkabilityCacheGrid = grid;
+            _walkabilityCacheSurfaceY = walkingSurfaceY;
+            _hasWalkabilityCacheSurface = true;
+        }
+
+        private Vector3 GetGroundAdjustedPoint(GridIndex index, float walkingSurfaceY)
+        {
+            Vector3 point = _grid.GetPosFromGridLocation(index);
+            WalkabilityCacheEntry cached;
+            if (_walkabilityCache.TryGetValue(index, out cached)
+                && cached.Walkable
+                && cached.ExpiresAt > Time.unscaledTime)
+            {
+                point.y = cached.GroundY;
+                return point;
+            }
+
+            RaycastHit hit;
+            if (TryFindGround(point, walkingSurfaceY, out hit))
+            {
+                point.y = hit.point.y;
+            }
+            return point;
         }
 
         private static bool IsWalkableOccupant(GameObject occupant)
@@ -1283,6 +1324,14 @@ namespace Overcooked2DishwasherBot
                 && Vector3.Dot(forward.normalized, desired) >= 0.98f)
             {
                 _facingBurstUntil = 0f;
+                if (HorizontalSpeed(player) <= 0.8f)
+                {
+                    InteractionFacingReady = true;
+                }
+                else
+                {
+                    Status = "braking while facing target";
+                }
                 return Vector3.zero;
             }
 
@@ -1309,6 +1358,20 @@ namespace Overcooked2DishwasherBot
             // can reject this interaction cell and request a different reachable side.
             Status = "final approach blocked";
             return Vector3.zero;
+        }
+
+        private struct WalkabilityCacheEntry
+        {
+            internal readonly bool Walkable;
+            internal readonly float GroundY;
+            internal readonly float ExpiresAt;
+
+            internal WalkabilityCacheEntry(bool walkable, float groundY, float expiresAt)
+            {
+                Walkable = walkable;
+                GroundY = groundY;
+                ExpiresAt = expiresAt;
+            }
         }
 
         private static bool HasGroundAhead(PlayerControls player, GameObject target, Vector3 direction)

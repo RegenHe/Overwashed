@@ -2,7 +2,14 @@
 
 BepInEx 5 plugin for the local Mono build of **Overcooked! 2**. Press **F8** to toggle it.
 
-Current version: **1.5.4**.
+Current version: **1.5.5**.
+
+### 1.5.5 fast interaction algorithm optimisation
+
+- Separates fast `0.1`-second action pulses from expensive interaction-cell rejection. A cell is now rejected only after the chef has finished turning and braking, preventing low frame rates from causing repeated full-grid path rebuilds.
+- Throttles the game's nearby-interaction collider scan to Fast mode's actual 10 Hz action cadence instead of invoking it every rendered frame while standing at a target.
+- Reuses static grid occupancy and ground-probe results for short bounded intervals across route rebuilds. Dynamic chef-blocking cells are still rebuilt on every route, and the cache is invalidated immediately when the grid or walking height changes.
+- Reuses cached ground height when producing route waypoints, removing a second physics raycast for cells already validated by the path search.
 
 ### 1.5.4 fast-mode frame-time optimisation
 
