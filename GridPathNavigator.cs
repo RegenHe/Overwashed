@@ -1187,7 +1187,7 @@ namespace Overcooked2DishwasherBot
                 && index.Z >= -halfSize.Z && index.Z <= halfSize.Z;
         }
 
-        private static bool TryFindGround(Vector3 point, float walkingSurfaceY, out RaycastHit accepted)
+        private bool TryFindGround(Vector3 point, float walkingSurfaceY, out RaycastHit accepted)
         {
             RaycastHit[] hits;
             int hitCount = BufferedRaycast(
@@ -1374,7 +1374,7 @@ namespace Overcooked2DishwasherBot
             }
         }
 
-        private static bool HasGroundAhead(PlayerControls player, GameObject target, Vector3 direction)
+        private bool HasGroundAhead(PlayerControls player, GameObject target, Vector3 direction)
         {
             Vector3 position = player.transform.position;
             float walkingSurfaceY = GetWalkingSurfaceY(player);
@@ -1444,12 +1444,12 @@ namespace Overcooked2DishwasherBot
             return minimum;
         }
 
-        private static bool HasBlockingCollider(PlayerControls player, GameObject target, Vector3 direction)
+        private bool HasBlockingCollider(PlayerControls player, GameObject target, Vector3 direction)
         {
             return HasBlockingCollider(player, target, direction, 0.55f);
         }
 
-        private static bool HasOtherChefAhead(
+        private bool HasOtherChefAhead(
             PlayerControls player,
             Vector3 direction,
             float distance)
@@ -1478,7 +1478,7 @@ namespace Overcooked2DishwasherBot
             return false;
         }
 
-        private static bool HasBlockingCollider(
+        private bool HasBlockingCollider(
             PlayerControls player,
             GameObject target,
             Vector3 direction,
@@ -1546,7 +1546,7 @@ namespace Overcooked2DishwasherBot
             return false;
         }
 
-        private static bool HasStaticBlockingCollider(PlayerControls player, GameObject target, Vector3 direction)
+        private bool HasStaticBlockingCollider(PlayerControls player, GameObject target, Vector3 direction)
         {
             RaycastHit[] hits;
             int hitCount = BufferedSphereCast(
@@ -1596,7 +1596,7 @@ namespace Overcooked2DishwasherBot
             return false;
         }
 
-        private static int BufferedRaycast(
+        private int BufferedRaycast(
             Vector3 origin,
             Vector3 direction,
             float distance,
@@ -1626,7 +1626,7 @@ namespace Overcooked2DishwasherBot
             return hits.Length;
         }
 
-        private static int BufferedSphereCast(
+        private int BufferedSphereCast(
             Vector3 origin,
             float radius,
             Vector3 direction,

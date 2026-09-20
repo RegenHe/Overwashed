@@ -49,6 +49,7 @@ $references = @(
     (Join-Path $managedDir 'System.dll'),
     (Join-Path $managedDir 'System.Core.dll'),
     (Join-Path $bepInExCore 'BepInEx.dll'),
+    (Join-Path $bepInExCore '0Harmony.dll'),
     (Join-Path $managedDir 'Assembly-CSharp.dll'),
     (Join-Path $managedDir 'UnityEngine.dll'),
     (Join-Path $managedDir 'UnityEngine.CoreModule.dll'),

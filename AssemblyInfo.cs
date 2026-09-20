@@ -15,7 +15,7 @@ namespace Overcooked2DishwasherBot
 {
     internal static class BuildInfo
     {
-        internal const string Version = "1.5.7";
+        internal const string Version = "1.5.10";
         internal const string AssemblyVersion = Version + ".0";
     }
 }

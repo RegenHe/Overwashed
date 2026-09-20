@@ -22,6 +22,12 @@ namespace Overcooked2DishwasherBot
 
     internal sealed class AutoServePlanner
     {
+        private const int OrderDefinitionBucketCount = 9;
+        private const float WarmupSliceInterval = 0.04f;
+        private const float SteadySliceInterval = 0.2f;
+
+        private static int s_orderRevision;
+
         private static readonly FieldInfo ActiveOrdersField = typeof(ClientOrderControllerBase).GetField(
             "m_activeOrders",
             BindingFlags.Instance | BindingFlags.NonPublic);
@@ -36,7 +42,10 @@ namespace Overcooked2DishwasherBot
 
         private readonly List<RecipeList.Entry> _orders = new List<RecipeList.Entry>();
         private readonly HashSet<int> _heldObjects = new HashSet<int>();
+        private readonly HashSet<int> _scannedDefinitionIds = new HashSet<int>();
         private readonly List<MonoBehaviour> _orderDefinitionCache = new List<MonoBehaviour>();
+        private readonly List<MonoBehaviour>[] _orderDefinitionBuckets;
+        private readonly OrderCompositionChangedCallback _compositionChangedCallback;
         private static readonly ClientPlate[] NoPlates = new ClientPlate[0];
         private static readonly MonoBehaviour[] NoBehaviours = new MonoBehaviour[0];
         private static readonly ClientPlateStation[] NoServingStations = new ClientPlateStation[0];
@@ -50,24 +59,121 @@ namespace Overcooked2DishwasherBot
         private ClientPlayerAttachmentCarrier _planningCarrier;
         private bool _planningSnapshotActive;
         private bool _planningBehavioursLoaded;
-        private float _nextPlateRefreshTime;
         private float _nextServingStationRefreshTime;
         private float _nextCarrierRefreshTime;
-        private float _nextOrderDefinitionRefreshTime;
+        private float _nextDefinitionSliceTime;
+        private int _nextDefinitionBucket;
+        private int _definitionSlicesCompleted;
+        private int _compositionRevision;
+        private int _observedCompositionRevision;
+        private int _observedOrderRevision;
+
+        internal AutoServePlanner()
+        {
+            _orderDefinitionBuckets = new List<MonoBehaviour>[OrderDefinitionBucketCount];
+            for (int i = 0; i < _orderDefinitionBuckets.Length; i++)
+            {
+                _orderDefinitionBuckets[i] = new List<MonoBehaviour>();
+            }
+            _compositionChangedCallback = OnOrderCompositionChanged;
+            _observedOrderRevision = s_orderRevision;
+        }
+
+        internal static void NotifyOrdersChanged()
+        {
+            unchecked
+            {
+                s_orderRevision++;
+            }
+        }
+
+        internal bool HasPendingPlanningSignal
+        {
+            get
+            {
+                return _observedOrderRevision != s_orderRevision
+                    || _observedCompositionRevision != _compositionRevision;
+            }
+        }
+
+        internal bool TickDiscovery()
+        {
+            if (Time.unscaledTime < _nextDefinitionSliceTime)
+            {
+                return false;
+            }
+
+            int bucket = _nextDefinitionBucket;
+            bool changed;
+            switch (bucket)
+            {
+                case 0:
+                {
+                    ClientPlate[] plates = UnityEngine.Object.FindObjectsOfType<ClientPlate>();
+                    _cachedPlates = plates ?? NoPlates;
+                    changed = ReplaceDefinitionBucket(bucket, plates);
+                    break;
+                }
+                case 1:
+                    changed = ScanDefinitionBucket<ClientCookableContainer>(bucket);
+                    break;
+                case 2:
+                    changed = ScanDefinitionBucket<ClientPreparationContainer>(bucket);
+                    break;
+                case 3:
+                    changed = ScanDefinitionBucket<ClientItemContainer>(bucket);
+                    break;
+                case 4:
+                    changed = ScanDefinitionBucket<ClientMixableContainer>(bucket);
+                    break;
+                case 5:
+                    changed = ScanDefinitionBucket<ClientLadleContainer>(bucket);
+                    break;
+                case 6:
+                    changed = ScanDefinitionBucket<AssignableOrderDefinition>(bucket);
+                    break;
+                case 7:
+                    changed = ScanDefinitionBucket<IngredientPropertiesComponent>(bucket);
+                    break;
+                default:
+                    changed = ScanDefinitionBucket<ItemPropertiesComponent>(bucket);
+                    break;
+            }
+
+            _nextDefinitionBucket = (bucket + 1) % OrderDefinitionBucketCount;
+            bool warmingUp = _definitionSlicesCompleted < OrderDefinitionBucketCount;
+            if (warmingUp)
+            {
+                _definitionSlicesCompleted++;
+            }
+            _nextDefinitionSliceTime = Time.unscaledTime
+                + (warmingUp ? WarmupSliceInterval : SteadySliceInterval);
+            return changed;
+        }
 
         internal void Clear()
         {
+            for (int i = 0; i < _orderDefinitionBuckets.Length; i++)
+            {
+                UnsubscribeDefinitionBucket(_orderDefinitionBuckets[i]);
+                _orderDefinitionBuckets[i].Clear();
+            }
             _orders.Clear();
             _heldObjects.Clear();
+            _scannedDefinitionIds.Clear();
             _orderDefinitionCache.Clear();
             _flow = null;
             _cachedPlates = NoPlates;
             _cachedServingStations = NoServingStations;
             _cachedCarriers = NoCarriers;
-            _nextPlateRefreshTime = 0f;
             _nextServingStationRefreshTime = 0f;
             _nextCarrierRefreshTime = 0f;
-            _nextOrderDefinitionRefreshTime = 0f;
+            _nextDefinitionSliceTime = 0f;
+            _nextDefinitionBucket = 0;
+            _definitionSlicesCompleted = 0;
+            _compositionRevision = 0;
+            _observedCompositionRevision = 0;
+            _observedOrderRevision = s_orderRevision;
             EndPlanningSnapshot();
         }
 
@@ -83,6 +189,9 @@ namespace Overcooked2DishwasherBot
             {
                 return false;
             }
+
+            _observedOrderRevision = s_orderRevision;
+            _observedCompositionRevision = _compositionRevision;
 
             if (!TryGetActiveOrders(player, _orders, out error) || _orders.Count == 0)
             {
@@ -360,7 +469,6 @@ namespace Overcooked2DishwasherBot
             }
             else
             {
-                RefreshOrderDefinitionCache();
                 behaviours = _orderDefinitionCache;
             }
             for (int i = 0; i < behaviours.Count; i++)
@@ -523,7 +631,6 @@ namespace Overcooked2DishwasherBot
         {
             if (_planningSnapshotActive && !_planningBehavioursLoaded)
             {
-                RefreshOrderDefinitionCache();
                 _planningBehaviours = _orderDefinitionCache;
                 _planningBehavioursLoaded = true;
             }
@@ -540,11 +647,6 @@ namespace Overcooked2DishwasherBot
 
         private ClientPlate[] GetPlateSnapshot()
         {
-            if (Time.unscaledTime >= _nextPlateRefreshTime)
-            {
-                _cachedPlates = UnityEngine.Object.FindObjectsOfType<ClientPlate>();
-                _nextPlateRefreshTime = Time.unscaledTime + 0.35f;
-            }
             return _cachedPlates ?? NoPlates;
         }
 
@@ -568,42 +670,114 @@ namespace Overcooked2DishwasherBot
             return _cachedCarriers ?? NoCarriers;
         }
 
-        private void RefreshOrderDefinitionCache()
-        {
-            if (Time.unscaledTime < _nextOrderDefinitionRefreshTime)
-            {
-                return;
-            }
-
-            _orderDefinitionCache.Clear();
-            AddOrderDefinitions<ClientCookableContainer>();
-            AddOrderDefinitions<ClientPreparationContainer>();
-            AddOrderDefinitions<ClientItemContainer>();
-            AddOrderDefinitions<ClientLadleContainer>();
-            AddOrderDefinitions<ClientMixableContainer>();
-            ClientPlate[] plates = GetPlateSnapshot();
-            for (int i = 0; i < plates.Length; i++)
-            {
-                if (plates[i] != null)
-                {
-                    _orderDefinitionCache.Add(plates[i]);
-                }
-            }
-            AddOrderDefinitions<AssignableOrderDefinition>();
-            AddOrderDefinitions<IngredientPropertiesComponent>();
-            AddOrderDefinitions<ItemPropertiesComponent>();
-            _nextOrderDefinitionRefreshTime = Time.unscaledTime + 0.75f;
-        }
-
-        private void AddOrderDefinitions<T>() where T : MonoBehaviour, IClientOrderDefinition
+        private bool ScanDefinitionBucket<T>(int bucket)
+            where T : MonoBehaviour, IClientOrderDefinition
         {
             T[] components = UnityEngine.Object.FindObjectsOfType<T>();
-            for (int i = 0; i < components.Length; i++)
+            return ReplaceDefinitionBucket(bucket, components);
+        }
+
+        private bool ReplaceDefinitionBucket<T>(int bucketIndex, T[] components)
+            where T : MonoBehaviour, IClientOrderDefinition
+        {
+            List<MonoBehaviour> bucket = _orderDefinitionBuckets[bucketIndex];
+            _scannedDefinitionIds.Clear();
+            if (components != null)
             {
-                if (components[i] != null)
+                for (int i = 0; i < components.Length; i++)
                 {
-                    _orderDefinitionCache.Add(components[i]);
+                    if (components[i] != null)
+                    {
+                        _scannedDefinitionIds.Add(components[i].GetInstanceID());
+                    }
                 }
+            }
+
+            bool unchanged = bucket.Count == _scannedDefinitionIds.Count;
+            if (unchanged)
+            {
+                for (int i = 0; i < bucket.Count; i++)
+                {
+                    MonoBehaviour existing = bucket[i];
+                    if (existing == null || !_scannedDefinitionIds.Contains(existing.GetInstanceID()))
+                    {
+                        unchanged = false;
+                        break;
+                    }
+                }
+            }
+            if (unchanged)
+            {
+                return false;
+            }
+
+            UnsubscribeDefinitionBucket(bucket);
+            bucket.Clear();
+            if (components != null)
+            {
+                for (int i = 0; i < components.Length; i++)
+                {
+                    T component = components[i];
+                    if (component == null)
+                    {
+                        continue;
+                    }
+                    bucket.Add(component);
+                    try
+                    {
+                        component.RegisterOrderCompositionChangedCallback(_compositionChangedCallback);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            RebuildOrderDefinitionCache();
+            OnOrderCompositionChanged(null);
+            return true;
+        }
+
+        private void UnsubscribeDefinitionBucket(List<MonoBehaviour> bucket)
+        {
+            for (int i = 0; i < bucket.Count; i++)
+            {
+                IClientOrderDefinition definition = bucket[i] as IClientOrderDefinition;
+                if (definition == null)
+                {
+                    continue;
+                }
+                try
+                {
+                    definition.UnregisterOrderCompositionChangedCallback(_compositionChangedCallback);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private void RebuildOrderDefinitionCache()
+        {
+            _orderDefinitionCache.Clear();
+            for (int bucketIndex = 0; bucketIndex < _orderDefinitionBuckets.Length; bucketIndex++)
+            {
+                List<MonoBehaviour> bucket = _orderDefinitionBuckets[bucketIndex];
+                for (int i = 0; i < bucket.Count; i++)
+                {
+                    if (bucket[i] != null)
+                    {
+                        _orderDefinitionCache.Add(bucket[i]);
+                    }
+                }
+            }
+        }
+
+        private void OnOrderCompositionChanged(AssembledDefinitionNode ignored)
+        {
+            unchecked
+            {
+                _compositionRevision++;
             }
         }
 

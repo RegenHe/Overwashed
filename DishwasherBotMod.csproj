@@ -24,6 +24,7 @@
     <Reference Include="System"><HintPath>$(ManagedDir)System.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="System.Core"><HintPath>$(ManagedDir)System.Core.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="BepInEx"><HintPath>$(BepInExDir)core\BepInEx.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(BepInExDir)core\0Harmony.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Assembly-CSharp"><HintPath>$(ManagedDir)Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine"><HintPath>$(ManagedDir)UnityEngine.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(ManagedDir)UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>

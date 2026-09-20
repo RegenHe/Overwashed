@@ -4,6 +4,7 @@ using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using HarmonyLib;
 using Team17.Online.Multiplayer.Messaging;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -33,6 +34,7 @@ namespace Overcooked2DishwasherBot
         private static readonly ClientWashingStation[] NoWashingStations = new ClientWashingStation[0];
 
         private ManualLogSource _log;
+        private Harmony _harmony;
         private ConfigEntry<bool> _autoAvoidance;
         private ConfigEntry<float> _avoidanceDistance;
         private ConfigEntry<bool> _autoServeReadyOrders;
@@ -132,10 +134,10 @@ namespace Overcooked2DishwasherBot
 
         private float ServingPlanScanInterval
         {
-            // Recipe matching can inspect every candidate meal and active order. Keep
-            // action retries at 0.1s in Fast mode, but do not rebuild an absent plan ten
-            // times per second while the kitchen is idle.
-            get { return FastModeEnabled ? 0.25f : 0.5f; }
+            // New orders and food-composition changes now invalidate the plan through
+            // the game's own callbacks. This is only a compatibility fallback in case a
+            // custom map or third-party component does not send those notifications.
+            get { return 0.5f; }
         }
 
         private float InteractionRetryInterval
@@ -165,6 +167,18 @@ namespace Overcooked2DishwasherBot
         private void Awake()
         {
             _log = Logger;
+            try
+            {
+                _harmony = new Harmony(PluginGuid);
+                _harmony.PatchAll(typeof(DishwasherBotPlugin).Assembly);
+            }
+            catch (Exception exception)
+            {
+                _harmony = null;
+                ReportErrorOnce(
+                    "order-hooks:" + exception.GetType().FullName + ":" + exception.Message,
+                    "Could not install automatic-serving order notifications; timed fallback remains active: " + exception);
+            }
             _autoAvoidance = Config.Bind(
                 "Avoidance",
                 "Enabled",
@@ -180,7 +194,7 @@ namespace Overcooked2DishwasherBot
             _autoServeReadyOrders = Config.Bind(
                 "Serving",
                 "AutoServeReadyOrders",
-                false,
+                true,
                 "Automatically plate completed meals when necessary and deliver matching active orders.");
             _serveInOrder = Config.Bind(
                 "Serving",
@@ -203,12 +217,12 @@ namespace Overcooked2DishwasherBot
             _fastMode = Config.Bind(
                 "Speed",
                 "FastMode",
-                false,
+                true,
                 "Reduce target scans, interaction retries, and action retry delays to about 0.1 seconds.");
             _extremeMode = Config.Bind(
                 "Speed",
                 "ExtremeMode",
-                false,
+                true,
                 "Repeatedly dash whenever the current route has more than a short distance remaining.");
             CreateStatusBadgeTextures();
             _log.LogInfo(PluginName + " " + PluginVersion + " loaded. Press F8 to toggle; click the active bot icon for settings.");
@@ -261,6 +275,11 @@ namespace Overcooked2DishwasherBot
         private void OnDestroy()
         {
             SceneManager.activeSceneChanged -= OnActiveSceneChanged;
+            if (_harmony != null)
+            {
+                _harmony.UnpatchSelf();
+                _harmony = null;
+            }
             RestoreServeOrderOverride();
             ShutdownBinding();
             DestroyStatusBadgeTextures();
@@ -737,7 +756,12 @@ namespace Overcooked2DishwasherBot
                 return;
             }
 
-            if (_autoServeReadyOrders.Value && TryAutoServe(carried))
+            bool autoServeHandled = false;
+            if (_autoServeReadyOrders.Value)
+            {
+                autoServeHandled = TryAutoServe(carried);
+            }
+            if (autoServeHandled)
             {
                 return;
             }
@@ -829,6 +853,12 @@ namespace Overcooked2DishwasherBot
                 return false;
             }
 
+            bool candidatesChanged = _servePlanner.TickDiscovery();
+            if (candidatesChanged || _servePlanner.HasPendingPlanningSignal)
+            {
+                _nextServeScanTime = 0f;
+            }
+
             ClientPlate carriedPlate = carried == null ? null : carried.GetComponent<ClientPlate>();
             if (carriedPlate != null)
             {
@@ -843,12 +873,13 @@ namespace Overcooked2DishwasherBot
 
                 RecipeList.Entry matchingOrder;
                 string error;
-                if (_servePlanner.TryFindMatchingOrder(
+                bool hasMatchingOrder = _servePlanner.TryFindMatchingOrder(
                     _player,
                     carriedPlate,
                     _serveInOrder.Value,
                     out matchingOrder,
-                    out error))
+                    out error);
+                if (hasMatchingOrder)
                 {
                     bool enteringDelivery = _servePhase != ServePhase.Delivering
                         || _deliveringItemId != carriedPlateId
@@ -956,7 +987,12 @@ namespace Overcooked2DishwasherBot
 
             AutoServePlan plan;
             string planningError;
-            if (!_servePlanner.TryBuildPlan(_player, _serveInOrder.Value, out plan, out planningError))
+            bool planBuilt = _servePlanner.TryBuildPlan(
+                _player,
+                _serveInOrder.Value,
+                out plan,
+                out planningError);
+            if (!planBuilt)
             {
                 if (!string.IsNullOrEmpty(planningError))
                 {

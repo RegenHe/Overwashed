@@ -6,4 +6,4 @@ It automatically collects dirty plates, carries them to a sink, and washes them.
 
 Press **F8** to toggle the bot. Click the top-right icon while enabled to open its settings.
 
-Current version: **1.5.7**
+Current version: **1.5.10**
