@@ -16,7 +16,9 @@ $outputDir = if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory
 }
 $output = Join-Path $outputDir 'Overwashed.dll'
+$outputPdb = [System.IO.Path]::ChangeExtension($output, '.pdb')
 $deployed = Join-Path $gameRoot 'BepInEx\plugins\Overwashed.dll'
+$deployedPdb = Join-Path $gameRoot 'BepInEx\plugins\Overwashed.pdb'
 $legacyOutput = Join-Path $outputDir 'Overcooked2.DishwasherBot.dll'
 $legacyPdb = Join-Path $outputDir 'Overcooked2.DishwasherBot.pdb'
 $legacyDeployed = Join-Path $gameRoot 'BepInEx\plugins\Overcooked2.DishwasherBot.dll'
@@ -66,13 +68,20 @@ $compilerArgs = @(
     '/noconfig',
     '/nostdlib+',
     '/target:library',
-    '/optimize+',
     '/deterministic+',
     '/langversion:7.3',
-    '/debug:pdbonly',
-    ("/out:" + $output),
-    ("/pdb:" + [System.IO.Path]::ChangeExtension($output, '.pdb'))
+    ("/out:" + $output)
 )
+if ($Configuration -eq 'Release') {
+    # A release DLL must not contain a CodeView record pointing to a local PDB
+    # path. Remove stale symbols as well so they cannot be published by mistake.
+    $compilerArgs += @('/optimize+', '/debug-')
+    if (Test-Path -LiteralPath $outputPdb) {
+        Remove-Item -LiteralPath $outputPdb -Force
+    }
+} else {
+    $compilerArgs += @('/optimize-', '/debug:portable', ("/pdb:" + $outputPdb))
+}
 $compilerArgs += $references | ForEach-Object { '/reference:' + $_ }
 $compilerArgs += $sources
 
@@ -82,6 +91,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Copy-Item -LiteralPath $output -Destination $deployed -Force
+if (Test-Path -LiteralPath $deployedPdb) {
+    Remove-Item -LiteralPath $deployedPdb -Force
+}
 if (Test-Path -LiteralPath $legacyOutput) {
     Remove-Item -LiteralPath $legacyOutput -Force
 }

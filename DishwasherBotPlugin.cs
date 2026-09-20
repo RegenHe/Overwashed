@@ -15,7 +15,7 @@ namespace Overcooked2DishwasherBot
     {
         public const string PluginGuid = "local.overcooked2.dishwasherbot";
         public const string PluginName = "Overwashed";
-        public const string PluginVersion = "1.5.5";
+        public const string PluginVersion = BuildInfo.Version;
 
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
@@ -140,10 +140,9 @@ namespace Overcooked2DishwasherBot
 
         private float InteractionRetryInterval
         {
-            // Fast mode keeps the actual button pulse at 0.1s. Rejecting an approach
-            // cell is a much more expensive spatial decision because it forces another
-            // grid search, so give turning/braking a few frames even in Fast mode.
-            get { return FastModeEnabled ? 0.35f : 0.75f; }
+            // The timer starts only after final facing and braking are complete, so Fast
+            // mode can safely retry at its full 0.1-second interaction cadence.
+            get { return FastModeEnabled ? 0.1f : 0.75f; }
         }
 
         private bool UsesRemoteNetworkInput
@@ -1675,7 +1674,7 @@ namespace Overcooked2DishwasherBot
                 _sinkInteractionCellSince = Time.time;
             }
             else if (Time.time - _sinkInteractionCellSince
-                >= (FastModeEnabled ? 0.35f : 0.65f))
+                >= (FastModeEnabled ? 0.1f : 0.65f))
             {
                 if (!_navigator.RejectCurrentInteractionCell())
                 {

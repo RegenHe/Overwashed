@@ -9,6 +9,8 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <Deterministic>true</Deterministic>
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
     <NoStdLib>true</NoStdLib>
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
@@ -31,7 +33,15 @@
 
   <Target Name="Deploy" AfterTargets="Build">
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(BepInExDir)plugins" />
+    <Delete Files="$(BepInExDir)plugins\Overwashed.pdb"
+            Condition="Exists('$(BepInExDir)plugins\Overwashed.pdb')" />
     <Delete Files="$(BepInExDir)plugins\Overcooked2.DishwasherBot.dll"
             Condition="Exists('$(BepInExDir)plugins\Overcooked2.DishwasherBot.dll')" />
+  </Target>
+
+  <Target Name="RemoveReleaseSymbols" AfterTargets="Build"
+          Condition="'$(Configuration)' == 'Release'">
+    <Delete Files="$(TargetDir)$(AssemblyName).pdb"
+            Condition="Exists('$(TargetDir)$(AssemblyName).pdb')" />
   </Target>
 </Project>
