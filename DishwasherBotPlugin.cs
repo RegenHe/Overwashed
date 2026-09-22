@@ -27,8 +27,10 @@ namespace Overcooked2DishwasherBot
         private readonly GridPathNavigator _navigator = new GridPathNavigator();
         private readonly AutoServePlanner _servePlanner = new AutoServePlanner();
         private readonly RoundTimeReader _roundTimeReader = new RoundTimeReader();
+        private readonly VirtualBotController _virtualController = new VirtualBotController();
         private readonly HashSet<string> _reportedErrors = new HashSet<string>();
         private readonly List<Vector3> _avoidanceThreats = new List<Vector3>();
+        private readonly List<int> _controlledPlayerChoices = new List<int>();
         private static readonly PlayerControls[] NoPlayers = new PlayerControls[0];
         private static readonly ClientDirtyPlateStack[] NoDirtyPlateStacks = new ClientDirtyPlateStack[0];
         private static readonly ClientWashingStation[] NoWashingStations = new ClientWashingStation[0];
@@ -43,6 +45,7 @@ namespace Overcooked2DishwasherBot
         private ConfigEntry<int> _serveInOrderCutoffSeconds;
         private ConfigEntry<bool> _fastMode;
         private ConfigEntry<bool> _extremeMode;
+        private ConfigEntry<int> _controlledPlayer;
         private bool _enabled;
         private bool _showSettings;
         private bool _avoidingPlayers;
@@ -224,6 +227,13 @@ namespace Overcooked2DishwasherBot
                 "ExtremeMode",
                 true,
                 "Repeatedly dash whenever the current route has more than a short distance remaining.");
+            _controlledPlayer = Config.Bind(
+                "Player",
+                "ControlledPlayer",
+                -1,
+                new ConfigDescription(
+                    "Local player controlled by the bot. -1 selects the last available local player.",
+                    new AcceptableValueRange<int>(-1, 10)));
             CreateStatusBadgeTextures();
             _log.LogInfo(PluginName + " " + PluginVersion + " loaded. Press F8 to toggle; click the active bot icon for settings.");
             if (ClientSinkPlateCount == null)
@@ -245,8 +255,9 @@ namespace Overcooked2DishwasherBot
                     return;
                 }
 
+                SyncVirtualPlayerSelection();
                 UpdateServeOrderForRoundTime();
-                if (!EnsureKeyboardPlayer())
+                if (!EnsureSelectedLocalPlayer())
                 {
                     ReleaseRobotInputs(false);
                     SetState(BotState.FindingPlayer);
@@ -280,6 +291,7 @@ namespace Overcooked2DishwasherBot
                 _harmony.UnpatchSelf();
                 _harmony = null;
             }
+            _virtualController.Dispose();
             RestoreServeOrderOverride();
             ShutdownBinding();
             DestroyStatusBadgeTextures();
@@ -340,7 +352,7 @@ namespace Overcooked2DishwasherBot
         private void DrawSettingsPanel()
         {
             const float width = 286f;
-            const float height = 342f;
+            const float height = 368f;
             float left = Mathf.Max(8f, Screen.width - width - 12f);
             Rect panel = new Rect(left, 52f, width, height);
 
@@ -455,9 +467,53 @@ namespace Overcooked2DishwasherBot
                 }
             }
 
+            bool previousEnabled = GUI.enabled;
+            GUI.enabled = previousEnabled && !_virtualController.HasVirtualPlayer;
+            if (GUI.Button(new Rect(panel.x + 16f, panel.y + 294f, 30f, 24f), "<"))
+            {
+                CycleControlledPlayer(-1);
+            }
             GUI.Label(
-                new Rect(panel.x + 16f, panel.y + 310f, panel.width - 32f, 22f),
-                "Click the bot icon to close settings");
+                new Rect(panel.x + 50f, panel.y + 296f, panel.width - 100f, 22f),
+                GetControlledPlayerLabel());
+            if (GUI.Button(new Rect(panel.x + panel.width - 46f, panel.y + 294f, 30f, 24f), ">"))
+            {
+                CycleControlledPlayer(1);
+            }
+            GUI.enabled = previousEnabled;
+
+            string virtualButton = _virtualController.HasVirtualPlayer
+                ? "Remove virtual bot player"
+                : "Add virtual bot player";
+            GUI.enabled = previousEnabled && _virtualController.CanModifyVirtualPlayer;
+            if (GUI.Button(
+                new Rect(panel.x + 16f, panel.y + 326f, panel.width - 32f, 26f),
+                virtualButton))
+            {
+                string virtualError;
+                bool succeeded;
+                if (_virtualController.HasVirtualPlayer)
+                {
+                    succeeded = _virtualController.TryRemovePlayer(out virtualError);
+                    if (succeeded)
+                    {
+                        _controlledPlayer.Value = -1;
+                    }
+                }
+                else
+                {
+                    succeeded = _virtualController.TryAddPlayer(out virtualError);
+                }
+                if (succeeded)
+                {
+                    RebindSelectedPlayer();
+                }
+                if (!succeeded && !string.IsNullOrEmpty(virtualError))
+                {
+                    ReportErrorOnce("virtual-player:" + virtualError, "Virtual bot player: " + virtualError);
+                }
+            }
+            GUI.enabled = previousEnabled;
         }
 
         private void CreateStatusBadgeTextures()
@@ -593,7 +649,7 @@ namespace Overcooked2DishwasherBot
             if (enabled)
             {
                 SetState(BotState.FindingPlayer);
-                _log.LogInfo("Overwashed ENABLED. Searching for a locally controlled keyboard chef.");
+                _log.LogInfo("Overwashed ENABLED. Searching for the selected locally controlled chef.");
             }
             else
             {
@@ -606,26 +662,26 @@ namespace Overcooked2DishwasherBot
             }
         }
 
-        private bool EnsureKeyboardPlayer()
+        private bool EnsureSelectedLocalPlayer()
         {
-            if (_player != null
-                && _player.gameObject != null
-                && _player.enabled
-                && _player.PlayerIDProvider != null
-                && _player.PlayerIDProvider.IsLocallyControlled()
-                && IsKeyboard(_player.PlayerIDProvider.GetID())
-                && _player.ControlScheme != null)
+            if (_player != null)
             {
-                if (_input == null || !_input.IsInstalled)
+                PlayerControls currentDesired = FindSelectedLocalPlayer(GetPlayerSnapshot(false));
+                if (_player == currentDesired && IsUsableLocalPlayer(_player))
                 {
-                    BindInput(_player);
+                    if (_input == null || !_input.IsInstalled)
+                    {
+                        BindInput(_player);
+                    }
+                    return EnsureNetworkInput();
                 }
-                return EnsureNetworkInput();
+                ShutdownBinding();
+            }
+            else if (_input != null || _carrier != null)
+            {
+                ShutdownBinding();
             }
 
-            ShutdownBinding();
-            _player = null;
-            _carrier = null;
             if (Time.unscaledTime < _nextAcquireTime)
             {
                 return false;
@@ -633,6 +689,24 @@ namespace Overcooked2DishwasherBot
             _nextAcquireTime = Time.unscaledTime + (FastModeEnabled ? 0.1f : 0.75f);
 
             PlayerControls[] players = GetPlayerSnapshot(true);
+            PlayerControls desired = FindSelectedLocalPlayer(players);
+            if (desired == null)
+            {
+                return false;
+            }
+
+            _player = desired;
+            _carrier = desired.GetComponent<ClientPlayerAttachmentCarrier>();
+            BindInput(desired);
+            return EnsureNetworkInput();
+        }
+
+        private PlayerControls FindSelectedLocalPlayer(PlayerControls[] players)
+        {
+            if (players == null || players.Length == 0)
+            {
+                return null;
+            }
             Array.Sort(players, delegate(PlayerControls left, PlayerControls right)
             {
                 int leftId = left == null || left.PlayerIDProvider == null ? int.MaxValue : (int)left.PlayerIDProvider.GetID();
@@ -640,33 +714,153 @@ namespace Overcooked2DishwasherBot
                 return leftId.CompareTo(rightId);
             });
 
+            int configured = _controlledPlayer == null ? -1 : _controlledPlayer.Value;
+            if (configured < 0)
+            {
+                for (int i = players.Length - 1; i >= 0; i--)
+                {
+                    if (IsUsableLocalPlayer(players[i]))
+                    {
+                        return players[i];
+                    }
+                }
+                return null;
+            }
+
             for (int i = 0; i < players.Length; i++)
             {
                 PlayerControls candidate = players[i];
-                if (candidate == null || !candidate.enabled || candidate.PlayerIDProvider == null)
+                if (IsUsableLocalPlayer(candidate)
+                    && (int)candidate.PlayerIDProvider.GetID() == configured)
+                {
+                    return candidate;
+                }
+            }
+            return null;
+        }
+
+        private static bool IsUsableLocalPlayer(PlayerControls player)
+        {
+            return player != null
+                && player.gameObject != null
+                && player.enabled
+                && player.PlayerIDProvider != null
+                && player.PlayerIDProvider.GetID() != PlayerInputLookup.Player.Count
+                && player.PlayerIDProvider.IsLocallyControlled()
+                && player.ControlScheme != null
+                && player.GetComponent<ClientPlayerAttachmentCarrier>() != null;
+        }
+
+        private void CycleControlledPlayer(int direction)
+        {
+            if (_virtualController.HasVirtualPlayer)
+            {
+                return;
+            }
+            _controlledPlayerChoices.Clear();
+            _controlledPlayerChoices.Add(-1);
+            PlayerControls[] players = GetPlayerSnapshot(true);
+            Array.Sort(players, delegate(PlayerControls left, PlayerControls right)
+            {
+                int leftId = left == null || left.PlayerIDProvider == null ? int.MaxValue : (int)left.PlayerIDProvider.GetID();
+                int rightId = right == null || right.PlayerIDProvider == null ? int.MaxValue : (int)right.PlayerIDProvider.GetID();
+                return leftId.CompareTo(rightId);
+            });
+            for (int i = 0; i < players.Length; i++)
+            {
+                if (!IsUsableLocalPlayer(players[i]))
                 {
                     continue;
                 }
-
-                PlayerIDProvider idProvider = candidate.PlayerIDProvider;
-                if (!idProvider.IsLocallyControlled() || !IsKeyboard(idProvider.GetID()) || candidate.ControlScheme == null)
+                int id = (int)players[i].PlayerIDProvider.GetID();
+                if (!_controlledPlayerChoices.Contains(id))
                 {
-                    continue;
+                    _controlledPlayerChoices.Add(id);
                 }
-
-                ClientPlayerAttachmentCarrier carrier = candidate.GetComponent<ClientPlayerAttachmentCarrier>();
-                if (carrier == null)
-                {
-                    continue;
-                }
-
-                _player = candidate;
-                _carrier = carrier;
-                BindInput(candidate);
-                return EnsureNetworkInput();
             }
 
-            return false;
+            int current = _controlledPlayer == null ? -1 : _controlledPlayer.Value;
+            int index = _controlledPlayerChoices.IndexOf(current);
+            if (index < 0)
+            {
+                index = 0;
+            }
+            index = (index + direction) % _controlledPlayerChoices.Count;
+            if (index < 0)
+            {
+                index += _controlledPlayerChoices.Count;
+            }
+            _controlledPlayer.Value = _controlledPlayerChoices[index];
+            RebindSelectedPlayer();
+        }
+
+        private string GetControlledPlayerLabel()
+        {
+            PlayerInputLookup.Player virtualPlayer;
+            if (_virtualController.TryGetVirtualPlayer(out virtualPlayer))
+            {
+                return "Chef: Player " + ((int)virtualPlayer + 1) + " virtual";
+            }
+            if (_virtualController.HasVirtualPlayer)
+            {
+                return "Chef: Virtual player";
+            }
+
+            int configured = _controlledPlayer == null ? -1 : _controlledPlayer.Value;
+            if (configured < 0)
+            {
+                if (_player != null && _player.PlayerIDProvider != null)
+                {
+                    return "Chef: Last (P" + ((int)_player.PlayerIDProvider.GetID() + 1) + ")";
+                }
+                return "Chef: Last local";
+            }
+
+            string device = string.Empty;
+            PlayerInputLookup.Player player = (PlayerInputLookup.Player)configured;
+            if (_virtualController.IsVirtualPlayer(player))
+            {
+                device = " virtual";
+            }
+            else if (IsKeyboard(player))
+            {
+                device = " keyboard";
+            }
+            return "Chef: Player " + (configured + 1) + device;
+        }
+
+        private void SyncVirtualPlayerSelection()
+        {
+            if (!_virtualController.HasVirtualPlayer || _controlledPlayer == null)
+            {
+                return;
+            }
+
+            PlayerInputLookup.Player virtualPlayer;
+            if (!_virtualController.TryGetVirtualPlayer(out virtualPlayer))
+            {
+                return;
+            }
+
+            int playerId = (int)virtualPlayer;
+            if (_controlledPlayer.Value == playerId)
+            {
+                return;
+            }
+
+            _controlledPlayer.Value = playerId;
+            RebindSelectedPlayer();
+        }
+
+        private void RebindSelectedPlayer()
+        {
+            EndCurrentInteraction();
+            ShutdownBinding();
+            _nextAcquireTime = 0f;
+            if (_enabled)
+            {
+                SetState(BotState.FindingPlayer);
+            }
         }
 
         private PlayerControls[] GetPlayerSnapshot(bool forceRefresh)
