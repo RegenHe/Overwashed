@@ -8,4 +8,4 @@ Press **F8** to toggle the bot. Click the top-right icon while enabled to open i
 
 Use the player selector in the settings panel to choose a local chef. The default, **Last local**, follows the last available local player. Add or remove the virtual bot player from a lobby or chef-selection screen, before entering a level.
 
-Current version: **1.6.0**
+Current version: **1.7.0**

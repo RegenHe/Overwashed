@@ -18,6 +18,10 @@ namespace Overcooked2DishwasherBot
         public const string PluginName = "Overwashed";
         public const string PluginVersion = BuildInfo.Version;
 
+        public static bool IsBotEnabled { get; private set; }
+        public static bool WasUsedThisRound { get; private set; }
+        public static string RuntimeVersion { get { return PluginVersion; } }
+
         private static readonly FieldInfo ClientSinkPlateCount = typeof(ClientWashingStation).GetField(
             "m_plateCount",
             BindingFlags.Instance | BindingFlags.NonPublic);
@@ -50,6 +54,7 @@ namespace Overcooked2DishwasherBot
         private bool _showSettings;
         private bool _avoidingPlayers;
         private bool _roundObservedActive;
+        private bool _usageRoundObservedActive;
         private bool _serveOrderAutoChanged;
         private bool _serveInOrderBeforeAutoChange;
         private PlayerControls _player;
@@ -76,9 +81,11 @@ namespace Overcooked2DishwasherBot
         private float _servePendingUntil;
         private float _nextPlayerSnapshotTime;
         private float _nextRoundTimeCheck;
+        private float _nextUsageRoundCheck;
         private float _nextDirtyObjectRefreshTime;
         private float _nextSinkObjectRefreshTime;
         private float _lastRoundRemaining = -1f;
+        private float _lastUsageRoundRemaining = -1f;
         private PlayerControls[] _playerSnapshot = NoPlayers;
         private ClientDirtyPlateStack[] _dirtyStackSnapshot = NoDirtyPlateStacks;
         private ClientWashingStation[] _sinkSnapshot = NoWashingStations;
@@ -86,6 +93,7 @@ namespace Overcooked2DishwasherBot
         private int _lastCarriedItemId;
         private int _deliveringItemId;
         private int _roundIdentity;
+        private int _usageRoundIdentity;
         private int _remoteServePreparationTargetId;
         private int _interactionRefreshTargetId;
         private float _remoteServeActionReadyTime;
@@ -170,6 +178,8 @@ namespace Overcooked2DishwasherBot
         private void Awake()
         {
             _log = Logger;
+            IsBotEnabled = false;
+            WasUsedThisRound = false;
             try
             {
                 _harmony = new Harmony(PluginGuid);
@@ -252,12 +262,18 @@ namespace Overcooked2DishwasherBot
                 }
                 if (!_enabled)
                 {
+                    if (WasUsedThisRound || _usageRoundObservedActive)
+                    {
+                        UpdateRoundUsageMarker(false);
+                    }
                     return;
                 }
 
                 SyncVirtualPlayerSelection();
                 UpdateServeOrderForRoundTime();
-                if (!EnsureSelectedLocalPlayer())
+                bool hasControlledPlayer = EnsureSelectedLocalPlayer();
+                UpdateRoundUsageMarker(hasControlledPlayer);
+                if (!hasControlledPlayer)
                 {
                     ReleaseRobotInputs(false);
                     SetState(BotState.FindingPlayer);
@@ -292,6 +308,8 @@ namespace Overcooked2DishwasherBot
                 _harmony = null;
             }
             _virtualController.Dispose();
+            IsBotEnabled = false;
+            WasUsedThisRound = false;
             RestoreServeOrderOverride();
             ShutdownBinding();
             DestroyStatusBadgeTextures();
@@ -304,6 +322,11 @@ namespace Overcooked2DishwasherBot
             _roundIdentity = 0;
             _lastRoundRemaining = -1f;
             _nextRoundTimeCheck = 0f;
+            _nextUsageRoundCheck = 0f;
+            _usageRoundObservedActive = false;
+            _usageRoundIdentity = 0;
+            _lastUsageRoundRemaining = -1f;
+            WasUsedThisRound = false;
             _roundTimeReader.Clear();
             _servePlanner.Clear();
             ClearWorldObjectSnapshots();
@@ -607,6 +630,7 @@ namespace Overcooked2DishwasherBot
                 RestoreServeOrderOverride();
             }
             _enabled = enabled;
+            IsBotEnabled = enabled;
             _navigator.Clear();
             _dirtyTarget = null;
             _sinkTarget = null;
@@ -659,6 +683,52 @@ namespace Overcooked2DishwasherBot
                 ShutdownBinding();
                 SetState(BotState.Disabled);
                 _log.LogInfo("Overwashed DISABLED. All robot input was released.");
+            }
+        }
+
+        private void UpdateRoundUsageMarker(bool hasControlledPlayer)
+        {
+            if (Time.unscaledTime < _nextUsageRoundCheck)
+            {
+                if (hasControlledPlayer && _usageRoundObservedActive)
+                {
+                    WasUsedThisRound = true;
+                }
+                return;
+            }
+            _nextUsageRoundCheck = Time.unscaledTime + 0.25f;
+
+            bool inRound;
+            float remainingSeconds;
+            bool timeAvailable = _roundTimeReader.TryRead(out inRound, out remainingSeconds);
+            if (!inRound)
+            {
+                _usageRoundObservedActive = false;
+                _usageRoundIdentity = 0;
+                _lastUsageRoundRemaining = -1f;
+                return;
+            }
+
+            int currentRoundIdentity = _roundTimeReader.RoundIdentity;
+            bool newRound = !_usageRoundObservedActive
+                || (currentRoundIdentity != 0
+                    && _usageRoundIdentity != 0
+                    && currentRoundIdentity != _usageRoundIdentity)
+                || (_usageRoundObservedActive
+                    && timeAvailable
+                    && _roundTimeReader.CanDetectRestartFromRemainingJump
+                    && _lastUsageRoundRemaining >= 0f
+                    && remainingSeconds > _lastUsageRoundRemaining + 1f);
+            if (newRound)
+            {
+                WasUsedThisRound = false;
+            }
+            _usageRoundObservedActive = true;
+            _usageRoundIdentity = currentRoundIdentity;
+            _lastUsageRoundRemaining = timeAvailable ? remainingSeconds : -1f;
+            if (hasControlledPlayer)
+            {
+                WasUsedThisRound = true;
             }
         }
 
