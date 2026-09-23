@@ -381,12 +381,12 @@ namespace Overcooked2DishwasherBot
 
             GUI.depth = -1001;
             GUI.color = Color.white;
-            GUI.Box(panel, "Overwashed Settings");
+            GUI.Box(panel, OverwashedText.Get("Overwashed Settings", "Overwashed 设置"));
 
             bool enabled = GUI.Toggle(
                 new Rect(panel.x + 16f, panel.y + 32f, panel.width - 32f, 22f),
                 _autoAvoidance.Value,
-                "Auto avoidance");
+                OverwashedText.Get("Auto avoidance", "自动避让"));
             if (enabled != _autoAvoidance.Value)
             {
                 _autoAvoidance.Value = enabled;
@@ -398,7 +398,9 @@ namespace Overcooked2DishwasherBot
 
             GUI.Label(
                 new Rect(panel.x + 16f, panel.y + 59f, panel.width - 32f, 22f),
-                "Avoidance distance: " + _avoidanceDistance.Value.ToString("0.0") + " tiles");
+                OverwashedText.IsSimplifiedChinese
+                    ? "避让距离：" + _avoidanceDistance.Value.ToString("0.0") + " 格"
+                    : "Avoidance distance: " + _avoidanceDistance.Value.ToString("0.0") + " tiles");
             float distance = GUI.HorizontalSlider(
                 new Rect(panel.x + 18f, panel.y + 85f, panel.width - 36f, 18f),
                 _avoidanceDistance.Value,
@@ -413,7 +415,7 @@ namespace Overcooked2DishwasherBot
             bool autoServe = GUI.Toggle(
                 new Rect(panel.x + 16f, panel.y + 110f, panel.width - 32f, 22f),
                 _autoServeReadyOrders.Value,
-                "Auto serve completed orders");
+                OverwashedText.Get("Auto serve completed orders", "自动上菜"));
             if (autoServe != _autoServeReadyOrders.Value)
             {
                 _autoServeReadyOrders.Value = autoServe;
@@ -423,7 +425,7 @@ namespace Overcooked2DishwasherBot
             bool serveInOrder = GUI.Toggle(
                 new Rect(panel.x + 16f, panel.y + 136f, panel.width - 32f, 22f),
                 _serveInOrder.Value,
-                "Serve in order");
+                OverwashedText.Get("Serve in order", "按顺序上菜"));
             if (serveInOrder != _serveInOrder.Value)
             {
                 _serveInOrder.Value = serveInOrder;
@@ -433,7 +435,7 @@ namespace Overcooked2DishwasherBot
             bool disableOrderNearEnd = GUI.Toggle(
                 new Rect(panel.x + 16f, panel.y + 162f, panel.width - 32f, 22f),
                 _disableServeInOrderNearEnd.Value,
-                "Disable order near round end");
+                OverwashedText.Get("Disable order near round end", "临近结束时关闭顺序上菜"));
             if (disableOrderNearEnd != _disableServeInOrderNearEnd.Value)
             {
                 _disableServeInOrderNearEnd.Value = disableOrderNearEnd;
@@ -446,7 +448,9 @@ namespace Overcooked2DishwasherBot
 
             GUI.Label(
                 new Rect(panel.x + 16f, panel.y + 188f, panel.width - 32f, 22f),
-                "Order cutoff: " + _serveInOrderCutoffSeconds.Value + " seconds");
+                OverwashedText.IsSimplifiedChinese
+                    ? "顺序关闭阈值：" + _serveInOrderCutoffSeconds.Value + " 秒"
+                    : "Order cutoff: " + _serveInOrderCutoffSeconds.Value + " seconds");
             int cutoffSeconds = Mathf.RoundToInt(GUI.HorizontalSlider(
                 new Rect(panel.x + 18f, panel.y + 214f, panel.width - 36f, 18f),
                 _serveInOrderCutoffSeconds.Value,
@@ -461,7 +465,7 @@ namespace Overcooked2DishwasherBot
             bool fastMode = GUI.Toggle(
                 new Rect(panel.x + 16f, panel.y + 240f, panel.width - 32f, 22f),
                 _fastMode.Value,
-                "Fast interactions");
+                OverwashedText.Get("Fast interactions", "快速交互"));
             if (fastMode != _fastMode.Value)
             {
                 _fastMode.Value = fastMode;
@@ -478,7 +482,7 @@ namespace Overcooked2DishwasherBot
             bool extremeMode = GUI.Toggle(
                 new Rect(panel.x + 16f, panel.y + 266f, panel.width - 32f, 22f),
                 _extremeMode.Value,
-                "Extreme dash mode");
+                OverwashedText.Get("Extreme dash mode", "极限冲刺模式"));
             if (extremeMode != _extremeMode.Value)
             {
                 _extremeMode.Value = extremeMode;
@@ -506,8 +510,8 @@ namespace Overcooked2DishwasherBot
             GUI.enabled = previousEnabled;
 
             string virtualButton = _virtualController.HasVirtualPlayer
-                ? "Remove virtual bot player"
-                : "Add virtual bot player";
+                ? OverwashedText.Get("Remove virtual bot player", "移除虚拟机器人玩家")
+                : OverwashedText.Get("Add virtual bot player", "添加虚拟机器人玩家");
             GUI.enabled = previousEnabled && _virtualController.CanModifyVirtualPlayer;
             if (GUI.Button(
                 new Rect(panel.x + 16f, panel.y + 326f, panel.width - 32f, 26f),
@@ -869,11 +873,13 @@ namespace Overcooked2DishwasherBot
             PlayerInputLookup.Player virtualPlayer;
             if (_virtualController.TryGetVirtualPlayer(out virtualPlayer))
             {
-                return "Chef: Player " + ((int)virtualPlayer + 1) + " virtual";
+                return OverwashedText.IsSimplifiedChinese
+                    ? "厨师：玩家 " + ((int)virtualPlayer + 1) + "（虚拟）"
+                    : "Chef: Player " + ((int)virtualPlayer + 1) + " virtual";
             }
             if (_virtualController.HasVirtualPlayer)
             {
-                return "Chef: Virtual player";
+                return OverwashedText.Get("Chef: Virtual player", "厨师：虚拟玩家");
             }
 
             int configured = _controlledPlayer == null ? -1 : _controlledPlayer.Value;
@@ -881,22 +887,38 @@ namespace Overcooked2DishwasherBot
             {
                 if (_player != null && _player.PlayerIDProvider != null)
                 {
-                    return "Chef: Last (P" + ((int)_player.PlayerIDProvider.GetID() + 1) + ")";
+                    return OverwashedText.IsSimplifiedChinese
+                        ? "厨师：最后一个（P" + ((int)_player.PlayerIDProvider.GetID() + 1) + "）"
+                        : "Chef: Last (P" + ((int)_player.PlayerIDProvider.GetID() + 1) + ")";
                 }
-                return "Chef: Last local";
+                return OverwashedText.Get("Chef: Last local", "厨师：最后一个本地玩家");
             }
 
-            string device = string.Empty;
             PlayerInputLookup.Player player = (PlayerInputLookup.Player)configured;
+            if (OverwashedText.IsSimplifiedChinese)
+            {
+                string device = string.Empty;
+                if (_virtualController.IsVirtualPlayer(player))
+                {
+                    device = "（虚拟）";
+                }
+                else if (IsKeyboard(player))
+                {
+                    device = "（键盘）";
+                }
+                return "厨师：玩家 " + (configured + 1) + device;
+            }
+
+            string englishDevice = string.Empty;
             if (_virtualController.IsVirtualPlayer(player))
             {
-                device = " virtual";
+                englishDevice = " virtual";
             }
             else if (IsKeyboard(player))
             {
-                device = " keyboard";
+                englishDevice = " keyboard";
             }
-            return "Chef: Player " + (configured + 1) + device;
+            return "Chef: Player " + (configured + 1) + englishDevice;
         }
 
         private void SyncVirtualPlayerSelection()
